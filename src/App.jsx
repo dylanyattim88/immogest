@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
- 
+
 const STORAGE_KEY = "immogest_data_v3";
- 
+
 const defaultData = {
   apartments: [
     { id: 1, name: "Apt 101", address: "12 Rue de la Paix", city: "Paris", zip: "75001", surface: 45, rooms: 2, rent: 1200, charges: 150, status: "loue", type: "appartement", floor: 1, description: "" },
@@ -37,7 +37,7 @@ const defaultData = {
     siret: "",
   },
 };
- 
+
 function loadData() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -45,23 +45,23 @@ function loadData() {
   } catch (e) {}
   return defaultData;
 }
- 
+
 function saveData(data) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) {}
 }
- 
+
 const fmt = (n) => Number(n).toLocaleString("fr-FR", { style: "currency", currency: "EUR" });
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR") : "-";
 const monthName = (d) => new Date(d).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 function daysUntil(dateStr) {
   return Math.ceil((new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24));
 }
- 
+
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
- 
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
- 
+
 :root {
   --bg: #f4f6f9;
   --white: #ffffff;
@@ -90,7 +90,7 @@ const css = `
   --r: 8px;
   --r2: 12px;
 }
- 
+
 body {
   background: var(--bg);
   color: var(--t1);
@@ -99,13 +99,13 @@ body {
   line-height: 1.5;
   min-height: 100vh;
 }
- 
+
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
- 
+
 .app { display: flex; min-height: 100vh; }
- 
+
 /* ── Sidebar ── */
 .sidebar {
   width: 230px;
@@ -116,7 +116,7 @@ body {
   top: 0; left: 0; bottom: 0;
   z-index: 100;
 }
- 
+
 .sidebar-brand {
   padding: 20px 20px 16px;
   border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -146,7 +146,7 @@ body {
   margin-top: 2px;
   letter-spacing: 0.5px;
 }
- 
+
 .nav-group {
   padding: 12px 12px 4px;
 }
@@ -187,7 +187,7 @@ body {
   min-width: 18px;
   text-align: center;
 }
- 
+
 .sidebar-footer {
   margin-top: auto;
   padding: 16px;
@@ -206,10 +206,10 @@ body {
 }
 .sidebar-stat-val { font-size: 20px; font-weight: 700; color: #fff; }
 .sidebar-stat-label { font-size: 10px; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 1px; }
- 
+
 /* ── Main ── */
 .main { margin-left: 230px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
- 
+
 .topbar {
   background: var(--white);
   border-bottom: 1px solid var(--border);
@@ -235,9 +235,9 @@ body {
   padding: 5px 12px;
   border-radius: 6px;
 }
- 
+
 .content { padding: 24px 28px; flex: 1; }
- 
+
 /* ── Alerts ── */
 .alert {
   display: flex;
@@ -252,7 +252,7 @@ body {
 }
 .alert-red { background: var(--red-light); color: var(--red); border-color: var(--red-light2); }
 .alert-amber { background: var(--amber-light); color: var(--amber); border-color: var(--amber-light2); }
- 
+
 /* ── Stat cards ── */
 .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
 .stat-card {
@@ -277,7 +277,7 @@ body {
 .stat-delta { font-size: 12px; color: var(--t3); margin-top: 4px; }
 .stat-delta.green { color: var(--green); }
 .stat-delta.red { color: var(--red); }
- 
+
 /* ── Cards ── */
 .card {
   background: var(--white);
@@ -306,7 +306,7 @@ body {
   border-radius: 20px;
 }
 .card-actions { margin-left: auto; }
- 
+
 /* ── Table ── */
 table { width: 100%; border-collapse: collapse; }
 th {
@@ -332,7 +332,7 @@ tr:last-child td { border-bottom: none; }
 tr:hover td { background: #fafbff; }
 .td-primary { color: var(--t1) !important; font-weight: 600; }
 .td-mono { font-family: 'SF Mono', 'Consolas', monospace; font-size: 12px !important; }
- 
+
 /* ── Badges ── */
 .badge {
   display: inline-flex;
@@ -355,7 +355,7 @@ tr:hover td { background: #fafbff; }
 .bb::before { background: var(--accent); }
 .bn { background: var(--bg); color: var(--t3); border: 1px solid var(--border); }
 .bn::before { background: var(--t4); }
- 
+
 /* ── Buttons ── */
 .btn {
   display: inline-flex;
@@ -380,10 +380,10 @@ tr:hover td { background: #fafbff; }
 .btn-danger:hover { background: var(--red-light2); }
 .btn-success { background: var(--green-light); color: var(--green); border: 1px solid var(--green-light2); }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
- 
+
 /* ── Grid ── */
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
- 
+
 /* ── Modal ── */
 .overlay {
   position: fixed; inset: 0;
@@ -413,7 +413,7 @@ tr:hover td { background: #fafbff; }
 .modal-sub { font-size: 13px; color: var(--t3); margin-bottom: 22px; }
 .modal-divider { height: 1px; background: var(--border); margin: 20px 0; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
- 
+
 /* ── Form ── */
 .form-group { margin-bottom: 14px; }
 .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--t2); margin-bottom: 5px; }
@@ -434,18 +434,18 @@ tr:hover td { background: #fafbff; }
 .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
 select.form-input { cursor: pointer; }
 textarea.form-input { resize: vertical; min-height: 70px; }
- 
+
 /* ── Ring ── */
 .ring-wrap { position: relative; display: inline-block; }
 .ring-svg { transform: rotate(-90deg); display: block; }
 .ring-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .ring-pct { font-size: 18px; font-weight: 700; color: var(--t1); line-height: 1; }
 .ring-lbl { font-size: 9px; font-weight: 600; color: var(--t3); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
- 
+
 /* ── Progress ── */
 .progress { background: var(--border); border-radius: 4px; height: 6px; overflow: hidden; }
 .progress-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
- 
+
 /* ── Activity ── */
 .activity-item { display: flex; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); align-items: flex-start; }
 .activity-item:last-child { border-bottom: none; }
@@ -453,18 +453,18 @@ textarea.form-input { resize: vertical; min-height: 70px; }
 .activity-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
 .activity-text { font-size: 13px; color: var(--t2); line-height: 1.5; }
 .activity-time { font-size: 11px; color: var(--t4); margin-top: 2px; }
- 
+
 /* ── Chart ── */
 .chart-bars { display: flex; align-items: flex-end; gap: 8px; height: 80px; }
 .chart-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
 .chart-bar { width: 100%; border-radius: 4px 4px 0 0; min-height: 4px; transition: height 0.4s ease; }
 .chart-label { font-size: 10px; color: var(--t4); font-weight: 500; }
- 
+
 /* ── Empty ── */
 .empty { padding: 40px; text-align: center; }
 .empty-icon { font-size: 28px; margin-bottom: 10px; opacity: 0.4; }
 .empty-text { font-size: 13px; color: var(--t3); }
- 
+
 /* ── Quittance ── */
 .quittance-preview {
   background: white;
@@ -489,15 +489,15 @@ textarea.form-input { resize: vertical; min-height: 70px; }
 .q-sign-box { text-align: center; font-size: 12px; color: #888; min-width: 180px; font-family: Arial, sans-serif; }
 .q-sign-line { height: 50px; border-bottom: 1px solid #ccc; margin-bottom: 8px; }
 .q-footer { margin-top: 28px; padding-top: 16px; border-top: 1px solid #ddd; font-size: 11px; color: #aaa; text-align: center; font-family: Arial, sans-serif; }
- 
+
 /* ── Chip ── */
 .chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; background: var(--bg); color: var(--t3); border: 1px solid var(--border); }
- 
+
 @media (max-width: 1100px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
 }
 `;
- 
+
 function Badge({ status }) {
   const map = {
     "loue": ["bg", "Loue"], "paye": ["bg", "Paye"],
@@ -509,7 +509,7 @@ function Badge({ status }) {
   const [cls, label] = map[status] || ["bn", status];
   return <span className={`badge ${cls}`}>{label}</span>;
 }
- 
+
 function Ring({ value, max, color, label, size = 80 }) {
   const r = size / 2 - 8;
   const circ = 2 * Math.PI * r;
@@ -529,7 +529,7 @@ function Ring({ value, max, color, label, size = 80 }) {
     </div>
   );
 }
- 
+
 function RevenueChart({ payments }) {
   const months = [];
   for (let i = 5; i >= 0; i--) {
@@ -561,7 +561,7 @@ function RevenueChart({ payments }) {
     </div>
   );
 }
- 
+
 function QuittanceModal({ payment, tenant, apartment, owner, onClose }) {
   const month = monthName(payment.date);
   const print = () => {
@@ -589,7 +589,7 @@ function QuittanceModal({ payment, tenant, apartment, owner, onClose }) {
     win.document.close();
     win.print();
   };
- 
+
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal modal-lg">
@@ -649,7 +649,7 @@ function QuittanceModal({ payment, tenant, apartment, owner, onClose }) {
     </div>
   );
 }
- 
+
 function Dashboard({ data }) {
   const loue = data.apartments.filter(a => a.status === "loue").length;
   const totalRent = data.apartments.filter(a => a.status === "loue").reduce((s, a) => s + a.rent + a.charges, 0);
@@ -657,12 +657,12 @@ function Dashboard({ data }) {
   const totalPaid = data.payments.filter(p => p.status === "paye").reduce((s, p) => s + p.amount, 0);
   const expiringLeases = data.tenants.filter(t => { const d = daysUntil(t.leaseEnd); return d >= 0 && d <= 90; });
   const recentPayments = [...data.payments].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 5);
- 
+
   return (
     <div>
       {late > 0 && <div className="alert alert-red">⚠️ {late} paiement(s) en retard — veuillez relancer le(s) locataire(s) concerné(s)</div>}
       {expiringLeases.length > 0 && <div className="alert alert-amber">📅 {expiringLeases.length} bail(s) expirent dans moins de 90 jours : {expiringLeases.map(t => t.name).join(", ")}</div>}
- 
+
       <div className="stat-grid">
         <div className="stat-card">
           <div className="stat-top">
@@ -697,7 +697,7 @@ function Dashboard({ data }) {
           <div className="stat-delta">Tous paiements</div>
         </div>
       </div>
- 
+
       <div className="two-col">
         <div className="card">
           <div className="card-header"><span className="card-title">Revenus — 6 derniers mois</span></div>
@@ -723,7 +723,7 @@ function Dashboard({ data }) {
           </div>
         </div>
       </div>
- 
+
       <div className="two-col">
         <div className="card">
           <div className="card-header">
@@ -773,14 +773,14 @@ function Dashboard({ data }) {
     </div>
   );
 }
- 
+
 function Apartments({ data, setData }) {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const empty = { name: "", address: "", city: "", zip: "", surface: "", rooms: "", rent: "", charges: "", status: "vacant", type: "appartement", floor: "", description: "" };
   const [form, setForm] = useState(empty);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
- 
+
   const openNew = () => { setEditing(null); setForm(empty); setShowModal(true); };
   const openEdit = (a) => { setEditing(a.id); setForm({ ...a }); setShowModal(true); };
   const save = () => {
@@ -790,7 +790,7 @@ function Apartments({ data, setData }) {
     setShowModal(false);
   };
   const del = (id) => { if (window.confirm("Supprimer cet appartement ?")) setData(d => ({ ...d, apartments: d.apartments.filter(a => a.id !== id) })); };
- 
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -873,14 +873,14 @@ function Apartments({ data, setData }) {
     </div>
   );
 }
- 
+
 function Tenants({ data, setData }) {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const empty = { name: "", email: "", phone: "", apartmentId: "", leaseStart: "", leaseEnd: "", deposit: "", notes: "" };
   const [form, setForm] = useState(empty);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
- 
+
   const openNew = () => { setEditing(null); setForm(empty); setShowModal(true); };
   const openEdit = (t) => { setEditing(t.id); setForm({ ...t }); setShowModal(true); };
   const save = () => {
@@ -890,7 +890,7 @@ function Tenants({ data, setData }) {
     setShowModal(false);
   };
   const del = (id) => { if (window.confirm("Supprimer ce locataire ?")) setData(d => ({ ...d, tenants: d.tenants.filter(t => t.id !== id) })); };
- 
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -962,30 +962,30 @@ function Tenants({ data, setData }) {
     </div>
   );
 }
- 
+
 function Payments({ data, setData }) {
   const [showModal, setShowModal] = useState(false);
   const [quittance, setQuittance] = useState(null);
   const empty = { tenantId: "", apartmentId: "", amount: "", date: new Date().toISOString().split("T")[0], type: "Loyer + charges", status: "paye", method: "virement", reference: "" };
   const [form, setForm] = useState(empty);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
- 
+
   const save = () => {
     setData(d => ({ ...d, payments: [...d.payments, { ...form, id: Date.now(), tenantId: +form.tenantId, apartmentId: +form.apartmentId, amount: +form.amount }] }));
     setShowModal(false);
   };
   const toggle = (id) => setData(d => ({ ...d, payments: d.payments.map(p => p.id === id ? { ...p, status: p.status === "paye" ? "en retard" : "paye" } : p) }));
   const del = (id) => { if (window.confirm("Supprimer ce paiement ?")) setData(d => ({ ...d, payments: d.payments.filter(p => p.id !== id) })); };
- 
+
   const openQuittance = (p) => {
     const t = data.tenants.find(t => t.id === p.tenantId);
     const a = data.apartments.find(a => a.id === p.apartmentId);
     if (t && a) setQuittance({ payment: p, tenant: t, apartment: a });
   };
- 
+
   const totalPaye = data.payments.filter(p => p.status === "paye").reduce((s, p) => s + p.amount, 0);
   const totalRetard = data.payments.filter(p => p.status === "en retard").reduce((s, p) => s + p.amount, 0);
- 
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -1033,7 +1033,7 @@ function Payments({ data, setData }) {
           </tbody>
         </table>
       </div>
- 
+
       {showModal && (
         <div className="overlay" onClick={e => e.target === e.currentTarget && setShowModal(false)}>
           <div className="modal">
@@ -1084,21 +1084,21 @@ function Payments({ data, setData }) {
           </div>
         </div>
       )}
- 
+
       {quittance && (
         <QuittanceModal payment={quittance.payment} tenant={quittance.tenant} apartment={quittance.apartment} owner={data.owner} onClose={() => setQuittance(null)} />
       )}
     </div>
   );
 }
- 
+
 function Maintenance({ data, setData }) {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const empty = { apartmentId: "", description: "", date: new Date().toISOString().split("T")[0], status: "planifie", priority: "basse", cost: "", provider: "", notes: "" };
   const [form, setForm] = useState(empty);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
- 
+
   const openNew = () => { setEditing(null); setForm(empty); setShowModal(true); };
   const openEdit = (m) => { setEditing(m.id); setForm({ ...m }); setShowModal(true); };
   const save = () => {
@@ -1110,9 +1110,9 @@ function Maintenance({ data, setData }) {
   const next = { "planifie": "en cours", "en cours": "termine", "termine": "planifie" };
   const advance = (id) => setData(d => ({ ...d, maintenances: d.maintenances.map(m => m.id === id ? { ...m, status: next[m.status] } : m) }));
   const del = (id) => { if (window.confirm("Supprimer cette intervention ?")) setData(d => ({ ...d, maintenances: d.maintenances.filter(m => m.id !== id) })); };
- 
+
   const totalCout = data.maintenances.reduce((s, m) => s + (m.cost || 0), 0);
- 
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -1190,18 +1190,18 @@ function Maintenance({ data, setData }) {
     </div>
   );
 }
- 
+
 function Settings({ data, setData }) {
   const [form, setForm] = useState({ ...data.owner });
   const [saved, setSaved] = useState(false);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
- 
+
   const save = () => {
     setData(d => ({ ...d, owner: { ...form } }));
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
   };
- 
+
   return (
     <div style={{ maxWidth: 580 }}>
       <div style={{ fontSize: 13, color: "var(--t2)", marginBottom: 20 }}>
@@ -1234,7 +1234,7 @@ function Settings({ data, setData }) {
     </div>
   );
 }
- 
+
 const NAV = [
   { id: "dashboard", label: "Tableau de bord", icon: "📊" },
   { id: "apartments", label: "Appartements", icon: "🏠" },
@@ -1243,7 +1243,7 @@ const NAV = [
   { id: "maintenance", label: "Maintenance", icon: "🔧" },
   { id: "settings", label: "Parametres", icon: "⚙️" },
 ];
- 
+
 const TITLES = {
   dashboard: ["Tableau de bord", "Vue d'ensemble"],
   apartments: ["Appartements", "Portefeuille immobilier"],
@@ -1252,18 +1252,18 @@ const TITLES = {
   maintenance: ["Maintenance", "Travaux et interventions"],
   settings: ["Parametres", "Configuration du compte"],
 };
- 
+
 export default function App() {
   const [page, setPage] = useState("dashboard");
   const [data, setData] = useState(loadData);
   useEffect(() => { saveData(data); }, [data]);
- 
+
   const lateCount = data.payments.filter(p => p.status === "en retard").length;
   const pages = { dashboard: Dashboard, apartments: Apartments, tenants: Tenants, payments: Payments, maintenance: Maintenance, settings: Settings };
   const Page = pages[page];
   const [title, sub] = TITLES[page];
   const today = new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
- 
+
   return (
     <>
       <style>{css}</style>
@@ -1310,4 +1310,11 @@ export default function App() {
               <div className="topbar-date">{today}</div>
             </div>
           </div>
-          <div classN
+<div className="content">
+            <Page data={data} setData={setData} />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
