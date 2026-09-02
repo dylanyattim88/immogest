@@ -1,53 +1,115 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, createContext, useContext } from "react";
+import { supabase, TABLES } from "./supabaseClient";
 
-const STORAGE_KEY = "immogest_data_v4";
-
-const defaultData = {
-  buildings: [
-    { id: 1, name: "Residence Les Lilas", address: "12 Rue de la Paix", city: "Paris", zip: "75001", floors: 5, type: "residentiel", description: "" },
-    { id: 2, name: "Immeuble Montaigne", address: "8 Avenue Montaigne", city: "Paris", zip: "75008", floors: 8, type: "mixte", description: "" },
-    { id: 3, name: "Residence du Faubourg", address: "3 Rue du Faubourg", city: "Lyon", zip: "69001", floors: 4, type: "residentiel", description: "" },
-  ],
-  apartments: [
-    { id: 1, buildingId: 1, name: "Apt 101", surface: 45, rooms: 2, rent: 1200, charges: 150, status: "loue", type: "appartement", floor: 1, description: "" },
-    { id: 2, buildingId: 2, name: "Apt 202", surface: 72, rooms: 3, rent: 2100, charges: 200, status: "loue", type: "appartement", floor: 2, description: "" },
-    { id: 3, buildingId: 3, name: "Apt 305", surface: 30, rooms: 1, rent: 650, charges: 80, status: "vacant", type: "studio", floor: 3, description: "" },
-    { id: 4, buildingId: 1, name: "Apt 410", surface: 60, rooms: 3, rent: 1450, charges: 120, status: "loue", type: "appartement", floor: 4, description: "" },
-  ],
-  tenants: [
-    { id: 1, name: "Marie Dupont", email: "marie.dupont@email.fr", phone: "06 12 34 56 78", apartmentId: 1, leaseStart: "2024-01-01", leaseEnd: "2024-12-31", deposit: 2400, notes: "" },
-    { id: 2, name: "Thomas Bernard", email: "thomas.b@email.fr", phone: "07 98 76 54 32", apartmentId: 2, leaseStart: "2023-09-01", leaseEnd: "2025-08-31", deposit: 4200, notes: "" },
-    { id: 3, name: "Isabelle Martin", email: "i.martin@email.fr", phone: "06 55 44 33 22", apartmentId: 4, leaseStart: "2024-03-15", leaseEnd: "2025-03-14", deposit: 2900, notes: "" },
-  ],
-  payments: [
-    { id: 1, tenantId: 1, apartmentId: 1, amount: 1350, date: "2026-05-01", type: "Loyer + charges", status: "paye", method: "virement", reference: "VIR-2026-05-001" },
-    { id: 2, tenantId: 2, apartmentId: 2, amount: 2300, date: "2026-05-03", type: "Loyer + charges", status: "paye", method: "virement", reference: "VIR-2026-05-002" },
-    { id: 3, tenantId: 3, apartmentId: 4, amount: 1570, date: "2026-05-01", type: "Loyer + charges", status: "en retard", method: "", reference: "" },
-    { id: 4, tenantId: 1, apartmentId: 1, amount: 1350, date: "2026-04-01", type: "Loyer + charges", status: "paye", method: "virement", reference: "VIR-2026-04-001" },
-    { id: 5, tenantId: 2, apartmentId: 2, amount: 2300, date: "2026-04-02", type: "Loyer + charges", status: "paye", method: "virement", reference: "VIR-2026-04-002" },
-    { id: 6, tenantId: 3, apartmentId: 4, amount: 1570, date: "2026-04-01", type: "Loyer + charges", status: "paye", method: "especes", reference: "ESP-2026-04-001" },
-  ],
-  maintenances: [
-    { id: 1, apartmentId: 1, description: "Fuite robinet cuisine", date: "2026-05-10", status: "en cours", priority: "haute", cost: 150, provider: "Plomberie Martin", notes: "" },
-    { id: 2, apartmentId: 2, description: "Remplacement chauffe-eau", date: "2026-04-20", status: "termine", priority: "urgente", cost: 800, provider: "Electro Services", notes: "" },
-    { id: 3, apartmentId: 4, description: "Peinture salon", date: "2026-05-18", status: "planifie", priority: "basse", cost: 400, provider: "", notes: "" },
-  ],
-  owner: {
-    name: "Jean Proprietaire", address: "15 Rue des Lilas", city: "Paris", zip: "75010",
-    email: "jean.proprio@email.fr", phone: "06 00 00 00 00", siret: "",
-  },
+const emptyData = {
+  buildings: [],
+  apartments: [],
+  tenants: [],
+  payments: [],
+  maintenances: [],
+  syndicCharges: [],
+  owner: { name: "", address: "", city: "", zip: "", email: "", phone: "", siret: "" },
 };
 
-function loadData() {
-  try { const s = localStorage.getItem(STORAGE_KEY); if (s) return JSON.parse(s); } catch (e) {}
-  return defaultData;
-}
-function saveData(d) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch (e) {} }
+// ── Devise ─────────────────────────────────────────────────────────────────────
+// Toutes les valeurs monetaires sont stockees en FCFA (devise de reference).
+// L'utilisateur peut choisir d'afficher/saisir en EUR : la conversion se fait a la volee.
+export const EUR_TO_FCFA = 655.957;
+export const CurrencyContext = createContext({ currency: "FCFA", setCurrency: () => {} });
+// Convertit une valeur stockee (FCFA) vers l'unite d'affichage courante
+export const toDisplay = (v, currency) => currency === "EUR" ? (Number(v) || 0) / EUR_TO_FCFA : (Number(v) || 0);
+// Convertit une valeur saisie (dans l'unite d'affichage) vers le stockage (FCFA)
+export const toStorage = (v, currency) => currency === "EUR" ? (Number(v) || 0) * EUR_TO_FCFA : (Number(v) || 0);
 
-const fmt = (n) => Number(n).toLocaleString("fr-FR", { style: "currency", currency: "EUR" });
+function fmt(nFcfa, currency = "FCFA") {
+  const n = Number(nFcfa) || 0;
+  if (currency === "EUR") return (n / EUR_TO_FCFA).toLocaleString("fr-FR", { style: "currency", currency: "EUR" });
+  return Math.round(n).toLocaleString("fr-FR") + " FCFA";
+}
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR") : "-";
 const monthName = (d) => new Date(d).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 const daysUntil = (d) => Math.ceil((new Date(d) - new Date()) / 86400000);
+
+// ── Synchronisation Supabase (temps reel, partagee entre tous les utilisateurs) ─
+function useSupabaseData() {
+  const [data, setData] = useState(emptyData);
+  const [loading, setLoading] = useState(true);
+  const lastSynced = useRef(null);
+  const applyingRemote = useRef(false);
+
+  const fetchAll = async () => {
+    const [b, a, t, p, m, s, o] = await Promise.all([
+      supabase.from("buildings").select("*").order("id"),
+      supabase.from("apartments").select("*").order("id"),
+      supabase.from("tenants").select("*").order("id"),
+      supabase.from("payments").select("*").order("id"),
+      supabase.from("maintenances").select("*").order("id"),
+      supabase.from("syndicCharges").select("*").order("id"),
+      supabase.from("owner").select("*").eq("id", 1).maybeSingle(),
+    ]);
+    const next = {
+      buildings: b.data || [],
+      apartments: a.data || [],
+      tenants: t.data || [],
+      payments: p.data || [],
+      maintenances: m.data || [],
+      syndicCharges: s.data || [],
+      owner: o.data || emptyData.owner,
+    };
+    applyingRemote.current = true;
+    lastSynced.current = JSON.parse(JSON.stringify(next));
+    setData(next);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchAll();
+    const channel = supabase.channel("immogest-realtime");
+    TABLES.concat(["owner"]).forEach(table => {
+      channel.on("postgres_changes", { event: "*", schema: "public", table }, () => { fetchAll(); });
+    });
+    channel.subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  // Pousse vers Supabase toute modification locale (issue de setData dans l'UI)
+  useEffect(() => {
+    if (applyingRemote.current) { applyingRemote.current = false; return; }
+    if (!lastSynced.current) return;
+    const prev = lastSynced.current;
+    const pushArrayDiff = async (table, prevArr, nextArr) => {
+      const nextIds = new Set(nextArr.map(r => r.id));
+      const toDelete = prevArr.filter(r => !nextIds.has(r.id)).map(r => r.id);
+      const toUpsert = nextArr.filter(r => {
+        const old = prevArr.find(p => p.id === r.id);
+        return !old || JSON.stringify(old) !== JSON.stringify(r);
+      });
+      if (toDelete.length) await supabase.from(table).delete().in("id", toDelete);
+      if (toUpsert.length) await supabase.from(table).upsert(toUpsert);
+    };
+    (async () => {
+      await Promise.all([
+        pushArrayDiff("buildings", prev.buildings, data.buildings),
+        pushArrayDiff("apartments", prev.apartments, data.apartments),
+        pushArrayDiff("tenants", prev.tenants, data.tenants),
+        pushArrayDiff("payments", prev.payments, data.payments),
+        pushArrayDiff("maintenances", prev.maintenances, data.maintenances),
+        pushArrayDiff("syndicCharges", prev.syndicCharges, data.syndicCharges),
+      ]);
+      if (JSON.stringify(prev.owner) !== JSON.stringify(data.owner)) {
+        await supabase.from("owner").upsert({ ...data.owner, id: 1 });
+      }
+      lastSynced.current = JSON.parse(JSON.stringify(data));
+    })();
+  }, [data]);
+
+  const resetAll = async () => {
+    for (const table of TABLES) await supabase.from(table).delete().gte("id", 0);
+    await fetchAll();
+  };
+
+  return { data, setData, loading, resetAll };
+}
 
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -201,6 +263,7 @@ function Badge({ status }) {
     "planifie":["bb","Planifie"],"termine":["bg","Termine"],
     "urgente":["br","Urgente"],"haute":["ba","Haute"],"basse":["bn","Basse"],
     "residentiel":["bb","Residentiel"],"mixte":["bp","Mixte"],"commercial":["ba","Commercial"],
+    "a_payer":["bn","A payer"],"en_cours":["ba","En cours"],"en_retard":["br","En retard"],
   };
   const [cls, label] = map[status] || ["bn", status];
   return <span className={`badge ${cls}`}>{label}</span>;
@@ -225,6 +288,7 @@ function Ring({ value, max, color, label, size = 80 }) {
 }
 
 function RevenueChart({ payments }) {
+  const { currency } = useContext(CurrencyContext);
   const months = [];
   for (let i=5; i>=0; i--) {
     const d = new Date(); d.setMonth(d.getMonth()-i);
@@ -239,7 +303,7 @@ function RevenueChart({ payments }) {
       <div className="chart-bars">
         {months.map((m,i)=>(
           <div className="chart-bar-wrap" key={i}>
-            <div className="chart-bar" style={{height:`${(m.total/maxVal)*100}%`,background:m.total>0?"var(--accent)":"var(--border)"}} title={fmt(m.total)}/>
+            <div className="chart-bar" style={{height:`${(m.total/maxVal)*100}%`,background:m.total>0?"var(--accent)":"var(--border)"}} title={fmt(m.total,currency)}/>
           </div>
         ))}
       </div>
@@ -251,6 +315,7 @@ function RevenueChart({ payments }) {
 }
 
 function QuittanceModal({ payment, tenant, apartment, building, owner, onClose }) {
+  const { currency } = useContext(CurrencyContext);
   const month = monthName(payment.date);
   const fullAddress = building ? `${apartment.name} — ${building.address}, ${building.zip} ${building.city}` : apartment.name;
   const print = () => {
@@ -290,8 +355,8 @@ function QuittanceModal({ payment, tenant, apartment, building, owner, onClose }
           <div style={{marginBottom:16}}><div className="q-label">Bien loue</div><div className="q-value">{fullAddress} — {apartment.surface} m² — {apartment.rooms} piece(s)</div></div>
           <div className="q-total">
             <div className="q-total-label">Somme recue de {tenant.name} pour le mois de {month}</div>
-            <div className="q-total-amount">{fmt(payment.amount)}</div>
-            <div className="q-total-detail">Dont loyer : {fmt(apartment.rent)} — Dont charges : {fmt(apartment.charges)}{payment.method?` — Paiement par ${payment.method}`:""}{payment.reference?` (${payment.reference})`:""}</div>
+            <div className="q-total-amount">{fmt(payment.amount,currency)}</div>
+            <div className="q-total-detail">Dont loyer : {fmt(apartment.rent,currency)} — Dont charges : {fmt(apartment.charges,currency)}{payment.method?` — Paiement par ${payment.method}`:""}{payment.reference?` (${payment.reference})`:""}</div>
           </div>
           <div className="q-sign">
             <div className="q-sign-box"><div className="q-sign-line"></div><div>Signature du bailleur</div><div style={{marginTop:4,fontWeight:"bold",color:"#333"}}>{owner.name}</div></div>
@@ -309,11 +374,16 @@ function QuittanceModal({ payment, tenant, apartment, building, owner, onClose }
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
+const METHOD_LABELS = { virement: "Virement", cheque: "Cheque", especes: "Especes", prelevement: "Prelevement" };
 function Dashboard({ data }) {
+  const { currency } = useContext(CurrencyContext);
   const loue = data.apartments.filter(a=>a.status==="loue").length;
   const totalRent = data.apartments.filter(a=>a.status==="loue").reduce((s,a)=>s+a.rent+a.charges,0);
   const late = data.payments.filter(p=>p.status==="en retard").length;
-  const totalPaid = data.payments.filter(p=>p.status==="paye").reduce((s,p)=>s+p.amount,0);
+  const paidPayments = data.payments.filter(p=>p.status==="paye");
+  const totalPaid = paidPayments.reduce((s,p)=>s+p.amount,0);
+  const byMethod = {};
+  paidPayments.forEach(p=>{ const k=p.method||"autre"; byMethod[k]=(byMethod[k]||0)+p.amount; });
   const expiring = data.tenants.filter(t=>{const d=daysUntil(t.leaseEnd);return d>=0&&d<=90;});
   const recentPayments = [...data.payments].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,5);
 
@@ -343,13 +413,22 @@ function Dashboard({ data }) {
         </div>
         <div className="stat-card">
           <div className="stat-top"><span className="stat-label">Revenus mensuels</span><div className="stat-icon-wrap" style={{background:"#f0fdf4"}}>💶</div></div>
-          <div className="stat-value" style={{fontSize:20}}>{fmt(totalRent)}</div>
+          <div className="stat-value" style={{fontSize:20}}>{fmt(totalRent,currency)}</div>
           <div className="stat-delta green">Loyers + charges</div>
         </div>
         <div className="stat-card">
           <div className="stat-top"><span className="stat-label">Total encaisse</span><div className="stat-icon-wrap" style={{background:"#fffbeb"}}>📊</div></div>
-          <div className="stat-value" style={{fontSize:20}}>{fmt(totalPaid)}</div>
+          <div className="stat-value" style={{fontSize:20}}>{fmt(totalPaid,currency)}</div>
           <div className="stat-delta">Tous paiements</div>
+          {Object.keys(byMethod).length>0&&(
+            <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid var(--border)",display:"flex",flexDirection:"column",gap:2}}>
+              {Object.entries(byMethod).map(([k,v])=>(
+                <div key={k} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--t3)"}}>
+                  <span>{METHOD_LABELS[k]||k}</span><span style={{fontWeight:600,color:"var(--t2)"}}>{fmt(v,currency)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -374,7 +453,7 @@ function Dashboard({ data }) {
                     <span style={{fontSize:12,color:"var(--t2)",fontWeight:600}}>{b.total>0?Math.round((b.loues/b.total)*100):0}%</span>
                   </div>
                 </td>
-                <td className="td-mono" style={{fontWeight:700,color:"var(--green)"}}>{fmt(b.revenus)}</td>
+                <td className="td-mono" style={{fontWeight:700,color:"var(--green)"}}>{fmt(b.revenus,currency)}</td>
               </tr>
             ))}
           </tbody>
@@ -397,7 +476,7 @@ function Dashboard({ data }) {
                   <div key={a.id} style={{marginBottom:10}}>
                     <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}>
                       <span style={{color:"var(--t2)",fontWeight:500}}>{a.name} <span style={{color:"var(--t3)",fontSize:10}}>({b?.name})</span></span>
-                      <span style={{color:"var(--t1)",fontWeight:600}}>{fmt(a.rent+a.charges)}</span>
+                      <span style={{color:"var(--t1)",fontWeight:600}}>{fmt(a.rent+a.charges,currency)}</span>
                     </div>
                     <div className="progress">
                       <div className="progress-fill" style={{width:`${Math.min((a.rent/2500)*100,100)}%`,background:a.status==="loue"?"var(--accent)":"var(--border)"}}/>
@@ -418,7 +497,7 @@ function Dashboard({ data }) {
             <tbody>
               {recentPayments.map(p=>{
                 const t=data.tenants.find(t=>t.id===p.tenantId);
-                return <tr key={p.id}><td className="td-primary">{t?.name||"-"}</td><td className="td-mono">{fmt(p.amount)}</td><td className="td-mono">{fmtDate(p.date)}</td><td><Badge status={p.status}/></td></tr>;
+                return <tr key={p.id}><td className="td-primary">{t?.name||"-"}</td><td className="td-mono">{fmt(p.amount,currency)}</td><td className="td-mono">{fmtDate(p.date)}</td><td><Badge status={p.status}/></td></tr>;
               })}
             </tbody>
           </table>
@@ -443,6 +522,7 @@ function Dashboard({ data }) {
 
 // ── Buildings ──────────────────────────────────────────────────────────────────
 function Buildings({ data, setData, setPage, setSelectedBuilding }) {
+  const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const empty = {name:"",address:"",city:"",zip:"",floors:"",type:"residentiel",description:""};
@@ -508,7 +588,7 @@ function Buildings({ data, setData, setPage, setSelectedBuilding }) {
                 </div>
               </div>
               <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{fontSize:13,fontWeight:700,color:"var(--green)"}}>{fmt(stats.revenus)}/mois</span>
+                <span style={{fontSize:13,fontWeight:700,color:"var(--green)"}}>{fmt(stats.revenus,currency)}/mois</span>
                 <div style={{display:"flex",gap:6}} onClick={e=>e.stopPropagation()}>
                   <button className="btn btn-ghost btn-sm" onClick={()=>openEdit(b)}>Editer</button>
                   <button className="btn btn-danger btn-sm" onClick={()=>del(b.id)}>Suppr.</button>
@@ -554,6 +634,7 @@ function Buildings({ data, setData, setPage, setSelectedBuilding }) {
 
 // ── Apartments ─────────────────────────────────────────────────────────────────
 function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
+  const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const empty = {buildingId:"",name:"",surface:"",rooms:"",rent:"",charges:"",status:"vacant",type:"appartement",floor:"",description:""};
@@ -563,9 +644,9 @@ function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
   const filtered = selectedBuilding ? data.apartments.filter(a=>a.buildingId===selectedBuilding) : data.apartments;
 
   const openNew = () => {setEditing(null);setForm({...empty,buildingId:selectedBuilding||""});setShowModal(true);};
-  const openEdit = (a) => {setEditing(a.id);setForm({...a});setShowModal(true);};
+  const openEdit = (a) => {setEditing(a.id);setForm({...a,rent:toDisplay(a.rent,currency),charges:toDisplay(a.charges,currency)});setShowModal(true);};
   const save = () => {
-    const parsed = {...form,buildingId:+form.buildingId,rent:+form.rent,charges:+form.charges,surface:+form.surface,rooms:+form.rooms,floor:+form.floor};
+    const parsed = {...form,buildingId:+form.buildingId,rent:toStorage(form.rent,currency),charges:toStorage(form.charges,currency),surface:+form.surface,rooms:+form.rooms,floor:+form.floor};
     if (editing) setData(d=>({...d,apartments:d.apartments.map(a=>a.id===editing?{...parsed,id:editing}:a)}));
     else setData(d=>({...d,apartments:[...d.apartments,{...parsed,id:Date.now()}]}));
     setShowModal(false);
@@ -601,9 +682,9 @@ function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
                   <td>{b?.name||"-"} <span style={{fontSize:11,color:"var(--t3)"}}>{b?.city}</span></td>
                   <td><span className="chip">{a.type}</span></td>
                   <td>{a.surface} m² · {a.rooms}p</td>
-                  <td className="td-mono">{fmt(a.rent)}</td>
-                  <td className="td-mono">{fmt(a.charges)}</td>
-                  <td className="td-mono" style={{fontWeight:700,color:"var(--t1)"}}>{fmt(a.rent+a.charges)}</td>
+                  <td className="td-mono">{fmt(a.rent,currency)}</td>
+                  <td className="td-mono">{fmt(a.charges,currency)}</td>
+                  <td className="td-mono" style={{fontWeight:700,color:"var(--t1)"}}>{fmt(a.rent+a.charges,currency)}</td>
                   <td><Badge status={a.status}/></td>
                   <td><div style={{display:"flex",gap:6}}><button className="btn btn-ghost btn-sm" onClick={()=>openEdit(a)}>Editer</button><button className="btn btn-danger btn-sm" onClick={()=>del(a.id)}>Suppr.</button></div></td>
                 </tr>
@@ -638,8 +719,8 @@ function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
               <div className="form-group"><label className="form-label">Etage</label><input className="form-input" type="number" value={form.floor} onChange={e=>upd("floor",e.target.value)}/></div>
             </div>
             <div className="form-row">
-              <div className="form-group"><label className="form-label">Loyer HC (EUR)</label><input className="form-input" type="number" value={form.rent} onChange={e=>upd("rent",e.target.value)}/></div>
-              <div className="form-group"><label className="form-label">Charges (EUR)</label><input className="form-input" type="number" value={form.charges} onChange={e=>upd("charges",e.target.value)}/></div>
+              <div className="form-group"><label className="form-label">Loyer HC ({currency})</label><input className="form-input" type="number" value={form.rent} onChange={e=>upd("rent",e.target.value)}/></div>
+              <div className="form-group"><label className="form-label">Charges ({currency})</label><input className="form-input" type="number" value={form.charges} onChange={e=>upd("charges",e.target.value)}/></div>
             </div>
             <div className="form-group"><label className="form-label">Statut</label>
               <select className="form-input" value={form.status} onChange={e=>upd("status",e.target.value)}>
@@ -660,6 +741,7 @@ function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
 
 // ── Tenants ────────────────────────────────────────────────────────────────────
 function Tenants({ data, setData }) {
+  const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filterBuilding, setFilterBuilding] = useState(null);
@@ -671,13 +753,13 @@ function Tenants({ data, setData }) {
   const filteredTenants = data.tenants.filter(t=>filteredApts.some(a=>a.id===t.apartmentId));
 
   const save = () => {
-    const parsed = {...form,apartmentId:+form.apartmentId,deposit:+form.deposit};
+    const parsed = {...form,apartmentId:+form.apartmentId,deposit:toStorage(form.deposit,currency)};
     if (editing) setData(d=>({...d,tenants:d.tenants.map(t=>t.id===editing?{...parsed,id:editing}:t)}));
     else setData(d=>({...d,tenants:[...d.tenants,{...parsed,id:Date.now()}]}));
     setShowModal(false);
   };
   const del = (id) => {if(window.confirm("Supprimer ce locataire ?"))setData(d=>({...d,tenants:d.tenants.filter(t=>t.id!==id)}));};
-  const openEdit = (t) => {setEditing(t.id);setForm({...t});setShowModal(true);};
+  const openEdit = (t) => {setEditing(t.id);setForm({...t,deposit:toDisplay(t.deposit,currency)});setShowModal(true);};
 
   return (
     <div>
@@ -700,14 +782,18 @@ function Tenants({ data, setData }) {
               const apt=data.apartments.find(a=>a.id===t.apartmentId);
               const b=apt?data.buildings.find(b=>b.id===apt.buildingId):null;
               const days=daysUntil(t.leaseEnd);
+              const renewalSoon = days>=0 && days<=60;
               return (
                 <tr key={t.id}>
                   <td className="td-primary">{t.name}</td>
                   <td><div style={{fontSize:13}}>{t.email}</div><div style={{fontSize:11,color:"var(--t3)"}}>{t.phone}</div></td>
                   <td>{apt?.name||"-"}</td>
                   <td style={{fontSize:12,color:"var(--t3)"}}>{b?.name||"-"}</td>
-                  <td className="td-mono">{fmtDate(t.leaseEnd)}</td>
-                  <td className="td-mono">{fmt(t.deposit)}</td>
+                  <td className="td-mono">
+                    {fmtDate(t.leaseEnd)}
+                    {renewalSoon&&<div style={{marginTop:3}}><span className="badge ba" title="Le bail arrive a echeance dans moins de 2 mois">🔔 Renouvellement a anticiper</span></div>}
+                  </td>
+                  <td className="td-mono">{fmt(t.deposit,currency)}</td>
                   <td>{days<0?<Badge status="en retard"/>:days<=30?<span style={{color:"var(--red)",fontSize:12,fontWeight:600}}>{days}j</span>:days<=90?<span style={{color:"var(--amber)",fontSize:12,fontWeight:600}}>{days}j</span>:<span style={{color:"var(--t3)",fontSize:12}}>{days}j</span>}</td>
                   <td><div style={{display:"flex",gap:6}}><button className="btn btn-ghost btn-sm" onClick={()=>openEdit(t)}>Editer</button><button className="btn btn-danger btn-sm" onClick={()=>del(t.id)}>Suppr.</button></div></td>
                 </tr>
@@ -737,7 +823,7 @@ function Tenants({ data, setData }) {
               <div className="form-group"><label className="form-label">Debut du bail</label><input className="form-input" type="date" value={form.leaseStart} onChange={e=>upd("leaseStart",e.target.value)}/></div>
               <div className="form-group"><label className="form-label">Fin du bail</label><input className="form-input" type="date" value={form.leaseEnd} onChange={e=>upd("leaseEnd",e.target.value)}/></div>
             </div>
-            <div className="form-group"><label className="form-label">Depot de garantie (EUR)</label><input className="form-input" type="number" value={form.deposit} onChange={e=>upd("deposit",e.target.value)}/></div>
+            <div className="form-group"><label className="form-label">Depot de garantie ({currency})</label><input className="form-input" type="number" value={form.deposit} onChange={e=>upd("deposit",e.target.value)}/></div>
             <div className="form-group"><label className="form-label">Notes</label><textarea className="form-input" value={form.notes} onChange={e=>upd("notes",e.target.value)} rows={2}/></div>
             <div className="modal-actions">
               <button className="btn btn-ghost" onClick={()=>setShowModal(false)}>Annuler</button>
@@ -752,6 +838,7 @@ function Tenants({ data, setData }) {
 
 // ── Payments ───────────────────────────────────────────────────────────────────
 function Payments({ data, setData }) {
+  const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [quittance, setQuittance] = useState(null);
   const [filterBuilding, setFilterBuilding] = useState(null);
@@ -763,7 +850,7 @@ function Payments({ data, setData }) {
   const filteredPayments = data.payments.filter(p=>filteredApts.some(a=>a.id===p.apartmentId));
 
   const save = () => {
-    setData(d=>({...d,payments:[...d.payments,{...form,id:Date.now(),tenantId:+form.tenantId,apartmentId:+form.apartmentId,amount:+form.amount}]}));
+    setData(d=>({...d,payments:[...d.payments,{...form,id:Date.now(),tenantId:+form.tenantId,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)}]}));
     setShowModal(false);
   };
   const toggle = (id) => setData(d=>({...d,payments:d.payments.map(p=>p.id===id?{...p,status:p.status==="paye"?"en retard":"paye"}:p)}));
@@ -783,8 +870,8 @@ function Payments({ data, setData }) {
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <div style={{display:"flex",gap:24}}>
-          <div><div style={{fontSize:11,fontWeight:600,color:"var(--t3)",textTransform:"uppercase"}}>Total encaisse</div><div style={{fontSize:22,fontWeight:700,color:"var(--green)"}}>{fmt(totalPaye)}</div></div>
-          {totalRetard>0&&<div><div style={{fontSize:11,fontWeight:600,color:"var(--t3)",textTransform:"uppercase"}}>En attente</div><div style={{fontSize:22,fontWeight:700,color:"var(--red)"}}>{fmt(totalRetard)}</div></div>}
+          <div><div style={{fontSize:11,fontWeight:600,color:"var(--t3)",textTransform:"uppercase"}}>Total encaisse</div><div style={{fontSize:22,fontWeight:700,color:"var(--green)"}}>{fmt(totalPaye,currency)}</div></div>
+          {totalRetard>0&&<div><div style={{fontSize:11,fontWeight:600,color:"var(--t3)",textTransform:"uppercase"}}>En attente</div><div style={{fontSize:22,fontWeight:700,color:"var(--red)"}}>{fmt(totalRetard,currency)}</div></div>}
         </div>
         <button className="btn btn-primary" onClick={()=>{setForm(empty);setShowModal(true);}}>+ Enregistrer un paiement</button>
       </div>
@@ -808,7 +895,7 @@ function Payments({ data, setData }) {
                   <td className="td-primary">{t?.name||"-"}</td>
                   <td>{a?.name||"-"}</td>
                   <td style={{fontSize:12,color:"var(--t3)"}}>{b?.name||"-"}</td>
-                  <td className="td-mono" style={{fontWeight:700,color:"var(--t1)"}}>{fmt(p.amount)}</td>
+                  <td className="td-mono" style={{fontWeight:700,color:"var(--t1)"}}>{fmt(p.amount,currency)}</td>
                   <td className="td-mono">{fmtDate(p.date)}</td>
                   <td><span className="chip">{p.method||"-"}</span></td>
                   <td><Badge status={p.status}/></td>
@@ -846,7 +933,7 @@ function Payments({ data, setData }) {
               </div>
             </div>
             <div className="form-row">
-              <div className="form-group"><label className="form-label">Montant (EUR)</label><input className="form-input" type="number" value={form.amount} onChange={e=>upd("amount",e.target.value)}/></div>
+              <div className="form-group"><label className="form-label">Montant ({currency})</label><input className="form-input" type="number" value={form.amount} onChange={e=>upd("amount",e.target.value)}/></div>
               <div className="form-group"><label className="form-label">Date</label><input className="form-input" type="date" value={form.date} onChange={e=>upd("date",e.target.value)}/></div>
             </div>
             <div className="form-row">
@@ -883,6 +970,7 @@ function Payments({ data, setData }) {
 
 // ── Maintenance ────────────────────────────────────────────────────────────────
 function Maintenance({ data, setData }) {
+  const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filterBuilding, setFilterBuilding] = useState(null);
@@ -894,7 +982,7 @@ function Maintenance({ data, setData }) {
   const filteredMaints = data.maintenances.filter(m=>filteredApts.some(a=>a.id===m.apartmentId));
 
   const save = () => {
-    const parsed = {...form,apartmentId:+form.apartmentId,cost:+form.cost};
+    const parsed = {...form,apartmentId:+form.apartmentId,cost:toStorage(form.cost,currency)};
     if(editing) setData(d=>({...d,maintenances:d.maintenances.map(m=>m.id===editing?{...parsed,id:editing}:m)}));
     else setData(d=>({...d,maintenances:[...d.maintenances,{...parsed,id:Date.now()}]}));
     setShowModal(false);
@@ -902,14 +990,14 @@ function Maintenance({ data, setData }) {
   const next = {"planifie":"en cours","en cours":"termine","termine":"planifie"};
   const advance = (id) => setData(d=>({...d,maintenances:d.maintenances.map(m=>m.id===id?{...m,status:next[m.status]}:m)}));
   const del = (id) => {if(window.confirm("Supprimer ?"))setData(d=>({...d,maintenances:d.maintenances.filter(m=>m.id!==id)}));};
-  const openEdit = (m) => {setEditing(m.id);setForm({...m});setShowModal(true);};
+  const openEdit = (m) => {setEditing(m.id);setForm({...m,cost:toDisplay(m.cost,currency)});setShowModal(true);};
 
   const totalCout = filteredMaints.reduce((s,m)=>s+(m.cost||0),0);
 
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-        <div><div style={{fontSize:11,fontWeight:600,color:"var(--t3)",textTransform:"uppercase"}}>Cout total</div><div style={{fontSize:22,fontWeight:700,color:"var(--amber)"}}>{fmt(totalCout)}</div></div>
+        <div><div style={{fontSize:11,fontWeight:600,color:"var(--t3)",textTransform:"uppercase"}}>Cout total</div><div style={{fontSize:22,fontWeight:700,color:"var(--amber)"}}>{fmt(totalCout,currency)}</div></div>
         <button className="btn btn-primary" onClick={()=>{setEditing(null);setForm(empty);setShowModal(true);}}>+ Signaler une intervention</button>
       </div>
 
@@ -933,7 +1021,7 @@ function Maintenance({ data, setData }) {
                   <td style={{maxWidth:180}}>{m.description}</td>
                   <td><Badge status={m.priority}/></td>
                   <td className="td-mono">{fmtDate(m.date)}</td>
-                  <td className="td-mono">{m.cost?fmt(m.cost):"-"}</td>
+                  <td className="td-mono">{m.cost?fmt(m.cost,currency):"-"}</td>
                   <td><Badge status={m.status}/></td>
                   <td><div style={{display:"flex",gap:5}}><button className="btn btn-ghost btn-sm" onClick={()=>advance(m.id)}>Avancer</button><button className="btn btn-ghost btn-sm" onClick={()=>openEdit(m)}>Editer</button><button className="btn btn-danger btn-sm" onClick={()=>del(m.id)}>X</button></div></td>
                 </tr>
@@ -969,7 +1057,7 @@ function Maintenance({ data, setData }) {
             </div>
             <div className="form-row">
               <div className="form-group"><label className="form-label">Prestataire</label><input className="form-input" value={form.provider} onChange={e=>upd("provider",e.target.value)}/></div>
-              <div className="form-group"><label className="form-label">Cout (EUR)</label><input className="form-input" type="number" value={form.cost} onChange={e=>upd("cost",e.target.value)}/></div>
+              <div className="form-group"><label className="form-label">Cout ({currency})</label><input className="form-input" type="number" value={form.cost} onChange={e=>upd("cost",e.target.value)}/></div>
             </div>
             <div className="form-group"><label className="form-label">Date</label><input className="form-input" type="date" value={form.date} onChange={e=>upd("date",e.target.value)}/></div>
             <div className="modal-actions">
@@ -983,8 +1071,105 @@ function Maintenance({ data, setData }) {
   );
 }
 
+// ── Charges de copropriete (appels de fonds) ────────────────────────────────────
+function SyndicCharges({ data, setData }) {
+  const { currency } = useContext(CurrencyContext);
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [filterBuilding, setFilterBuilding] = useState(null);
+  const empty = {apartmentId:"",amount:"",period:"",dueDate:new Date().toISOString().split("T")[0],status:"a_payer",notes:""};
+  const [form, setForm] = useState(empty);
+  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const filteredApts = filterBuilding ? data.apartments.filter(a=>a.buildingId===filterBuilding) : data.apartments;
+  const filteredCharges = data.syndicCharges.filter(c=>filteredApts.some(a=>a.id===c.apartmentId));
+
+  const save = () => {
+    const parsed = {...form,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)};
+    if(editing) setData(d=>({...d,syndicCharges:d.syndicCharges.map(c=>c.id===editing?{...parsed,id:editing}:c)}));
+    else setData(d=>({...d,syndicCharges:[...d.syndicCharges,{...parsed,id:Date.now()}]}));
+    setShowModal(false);
+  };
+  const del = (id) => {if(window.confirm("Supprimer cet appel de fonds ?"))setData(d=>({...d,syndicCharges:d.syndicCharges.filter(c=>c.id!==id)}));};
+  const openNew = () => {setEditing(null);setForm(empty);setShowModal(true);};
+  const openEdit = (c) => {setEditing(c.id);setForm({...c,amount:toDisplay(c.amount,currency)});setShowModal(true);};
+
+  const totalDu = filteredCharges.filter(c=>c.status!=="paye").reduce((s,c)=>s+c.amount,0);
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div><div style={{fontSize:11,fontWeight:600,color:"var(--t3)",textTransform:"uppercase"}}>Reste a payer</div><div style={{fontSize:22,fontWeight:700,color:"var(--amber)"}}>{fmt(totalDu,currency)}</div></div>
+        <button className="btn btn-primary" onClick={openNew}>+ Nouvel appel de fonds</button>
+      </div>
+
+      <div className="filter-bar">
+        <span className="filter-label">Immeuble :</span>
+        <button className={`filter-btn ${!filterBuilding?"active":""}`} onClick={()=>setFilterBuilding(null)}>Tous</button>
+        {data.buildings.map(b=><button key={b.id} className={`filter-btn ${filterBuilding===b.id?"active":""}`} onClick={()=>setFilterBuilding(b.id)}>{b.name}</button>)}
+      </div>
+
+      <div className="card">
+        <table>
+          <thead><tr><th>Appartement</th><th>Immeuble</th><th>Periode</th><th>Echeance</th><th>Montant</th><th>Statut</th><th>Actions</th></tr></thead>
+          <tbody>
+            {filteredCharges.map(c=>{
+              const a=data.apartments.find(a=>a.id===c.apartmentId);
+              const b=a?data.buildings.find(b=>b.id===a.buildingId):null;
+              return (
+                <tr key={c.id}>
+                  <td className="td-primary">{a?.name||"-"}</td>
+                  <td style={{fontSize:12,color:"var(--t3)"}}>{b?.name||"-"}</td>
+                  <td>{c.period||"-"}</td>
+                  <td className="td-mono">{fmtDate(c.dueDate)}</td>
+                  <td className="td-mono" style={{fontWeight:700,color:"var(--t1)"}}>{fmt(c.amount,currency)}</td>
+                  <td><Badge status={c.status}/></td>
+                  <td><div style={{display:"flex",gap:6}}><button className="btn btn-ghost btn-sm" onClick={()=>openEdit(c)}>Editer</button><button className="btn btn-danger btn-sm" onClick={()=>del(c.id)}>X</button></div></td>
+                </tr>
+              );
+            })}
+            {filteredCharges.length===0&&<tr><td colSpan={7}><div className="empty"><div className="empty-icon">🏛️</div><div className="empty-text">Aucun appel de fonds enregistre</div></div></td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {showModal&&(
+        <div className="overlay" onClick={e=>e.target===e.currentTarget&&setShowModal(false)}>
+          <div className="modal">
+            <div className="modal-title">{editing?"Modifier l'appel de fonds":"Nouvel appel de fonds"}</div>
+            <div className="modal-sub">Charges de copropriete (syndic) par appartement</div>
+            <div className="form-group"><label className="form-label">Appartement</label>
+              <select className="form-input" value={form.apartmentId} onChange={e=>upd("apartmentId",e.target.value)}>
+                <option value="">-- Selectionner --</option>
+                {data.apartments.map(a=>{const b=data.buildings.find(b=>b.id===a.buildingId);return <option key={a.id} value={a.id}>{a.name} — {b?.name}</option>;})}
+              </select>
+            </div>
+            <div className="form-row">
+              <div className="form-group"><label className="form-label">Periode (ex: T2 2026)</label><input className="form-input" value={form.period} onChange={e=>upd("period",e.target.value)}/></div>
+              <div className="form-group"><label className="form-label">Echeance</label><input className="form-input" type="date" value={form.dueDate} onChange={e=>upd("dueDate",e.target.value)}/></div>
+            </div>
+            <div className="form-row">
+              <div className="form-group"><label className="form-label">Montant ({currency})</label><input className="form-input" type="number" value={form.amount} onChange={e=>upd("amount",e.target.value)}/></div>
+              <div className="form-group"><label className="form-label">Statut</label>
+                <select className="form-input" value={form.status} onChange={e=>upd("status",e.target.value)}>
+                  <option value="a_payer">A payer</option><option value="en_cours">En cours</option><option value="paye">Paye</option><option value="en_retard">En retard</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-group"><label className="form-label">Notes</label><textarea className="form-input" rows={2} value={form.notes} onChange={e=>upd("notes",e.target.value)}/></div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={()=>setShowModal(false)}>Annuler</button>
+              <button className="btn btn-primary" onClick={save}>Enregistrer</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Settings ───────────────────────────────────────────────────────────────────
-function Settings({ data, setData }) {
+function Settings({ data, setData, resetAll }) {
   const [form, setForm] = useState({...data.owner});
   const [saved, setSaved] = useState(false);
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
@@ -1009,8 +1194,8 @@ function Settings({ data, setData }) {
       </div>
       <div className="card" style={{padding:24,marginTop:16,borderColor:"#fecaca"}}>
         <div style={{fontSize:14,fontWeight:700,color:"var(--red)",marginBottom:8}}>Zone dangereuse</div>
-        <div style={{fontSize:13,color:"var(--t3)",marginBottom:14}}>Reinitialise toutes les donnees. Action irreversible.</div>
-        <button className="btn btn-danger" onClick={()=>{if(window.confirm("Reinitialiser ?")){{localStorage.removeItem(STORAGE_KEY);window.location.reload();}}}}>Reinitialiser toutes les donnees</button>
+        <div style={{fontSize:13,color:"var(--t3)",marginBottom:14}}>Reinitialise toutes les donnees pour tout le monde (base partagee). Action irreversible.</div>
+        <button className="btn btn-danger" onClick={()=>{if(window.confirm("Reinitialiser les donnees pour tous les utilisateurs ?"))resetAll();}}>Reinitialiser toutes les donnees</button>
       </div>
     </div>
   );
@@ -1023,6 +1208,7 @@ const NAV = [
   {id:"apartments",label:"Appartements",icon:"🏠"},
   {id:"tenants",label:"Locataires",icon:"👥"},
   {id:"payments",label:"Paiements",icon:"💶"},
+  {id:"syndic",label:"Charges copro",icon:"🏛️"},
   {id:"maintenance",label:"Maintenance",icon:"🔧"},
   {id:"settings",label:"Parametres",icon:"⚙️"},
 ];
@@ -1032,15 +1218,17 @@ const TITLES = {
   apartments:["Appartements","Portefeuille par immeuble"],
   tenants:["Locataires","Gestion des baux"],
   payments:["Paiements","Loyers et encaissements"],
+  syndic:["Charges copro","Appels de fonds par appartement"],
   maintenance:["Maintenance","Travaux et interventions"],
   settings:["Parametres","Configuration du compte"],
 };
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
-  const [data, setData] = useState(loadData);
   const [selectedBuilding, setSelectedBuilding] = useState(null);
-  useEffect(()=>{saveData(data);},[data]);
+  const { data, setData, loading, resetAll } = useSupabaseData();
+  const [currency, setCurrency] = useState(() => localStorage.getItem("immogest_currency") || "FCFA");
+  useEffect(() => { localStorage.setItem("immogest_currency", currency); }, [currency]);
 
   const lateCount = data.payments.filter(p=>p.status==="en retard").length;
   const today = new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
@@ -1048,8 +1236,20 @@ export default function App() {
 
   const changePage = (id) => { setPage(id); if(id!=="apartments") setSelectedBuilding(null); };
 
+  if (loading) {
+    return (
+      <>
+        <style>{css}</style>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",flexDirection:"column",gap:12}}>
+          <div style={{fontSize:32}}>🏢</div>
+          <div style={{color:"var(--t3)",fontSize:13}}>Chargement des donnees...</div>
+        </div>
+      </>
+    );
+  }
+
   return (
-    <>
+    <CurrencyContext.Provider value={{ currency, setCurrency }}>
       <style>{css}</style>
       <div className="app">
         <nav className="sidebar">
@@ -1081,7 +1281,13 @@ export default function App() {
             <span className="topbar-title">{title}</span>
             <span className="topbar-sep">—</span>
             <span className="topbar-sub">{sub}</span>
-            <div className="topbar-right"><div className="topbar-date">{today}</div></div>
+            <div className="topbar-right">
+              <div style={{display:"flex",border:"1px solid var(--border)",borderRadius:6,overflow:"hidden"}}>
+                <button onClick={()=>setCurrency("FCFA")} style={{padding:"5px 12px",fontSize:12,fontWeight:600,border:"none",cursor:"pointer",background:currency==="FCFA"?"var(--accent)":"var(--white)",color:currency==="FCFA"?"#fff":"var(--t2)"}}>FCFA</button>
+                <button onClick={()=>setCurrency("EUR")} style={{padding:"5px 12px",fontSize:12,fontWeight:600,border:"none",cursor:"pointer",background:currency==="EUR"?"var(--accent)":"var(--white)",color:currency==="EUR"?"#fff":"var(--t2)"}}>EUR</button>
+              </div>
+              <div className="topbar-date">{today}</div>
+            </div>
           </div>
           <div className="content">
             {page==="dashboard"&&<Dashboard data={data}/>}
@@ -1089,11 +1295,12 @@ export default function App() {
             {page==="apartments"&&<Apartments data={data} setData={setData} selectedBuilding={selectedBuilding} setSelectedBuilding={setSelectedBuilding}/>}
             {page==="tenants"&&<Tenants data={data} setData={setData}/>}
             {page==="payments"&&<Payments data={data} setData={setData}/>}
+            {page==="syndic"&&<SyndicCharges data={data} setData={setData}/>}
             {page==="maintenance"&&<Maintenance data={data} setData={setData}/>}
-            {page==="settings"&&<Settings data={data} setData={setData}/>}
+            {page==="settings"&&<Settings data={data} setData={setData} resetAll={resetAll}/>}
           </div>
         </div>
       </div>
-    </>
+    </CurrencyContext.Provider>
   );
 }
