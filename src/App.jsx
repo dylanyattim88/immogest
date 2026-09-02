@@ -36,6 +36,7 @@ function useSupabaseData() {
   const [loading, setLoading] = useState(true);
   const lastSynced = useRef(null);
   const applyingRemote = useRef(false);
+  const pushChain = useRef(Promise.resolve());
 
   const fetchAll = async () => {
     const [b, a, t, p, m, s, o] = await Promise.all([
@@ -65,42 +66,63 @@ function useSupabaseData() {
   useEffect(() => {
     fetchAll();
     const channel = supabase.channel("immogest-realtime");
-    TABLES.concat(["owner"]).forEach(table => {
-      channel.on("postgres_changes", { event: "*", schema: "public", table }, () => { fetchAll(); });
+    // Applique chaque changement recu (insert/update/delete) directement sur la ligne concernee,
+    // au lieu de recharger toute la base a chaque fois : ca evite qu'un rechargement en retard
+    // n'ecrase des donnees ajoutees entre-temps par le meme utilisateur (bug "le 2e remplace le 1er").
+    TABLES.forEach(table => {
+      channel.on("postgres_changes", { event: "*", schema: "public", table }, (payload) => {
+        applyingRemote.current = true;
+        setData(d => {
+          let arr = d[table];
+          if (payload.eventType === "INSERT") {
+            arr = arr.some(r => r.id === payload.new.id) ? arr.map(r => r.id === payload.new.id ? payload.new : r) : [...arr, payload.new];
+          } else if (payload.eventType === "UPDATE") {
+            arr = arr.map(r => r.id === payload.new.id ? payload.new : r);
+          } else if (payload.eventType === "DELETE") {
+            arr = arr.filter(r => r.id !== payload.old.id);
+          }
+          const next = { ...d, [table]: arr };
+          lastSynced.current = { ...lastSynced.current, [table]: arr };
+          return next;
+        });
+      });
+    });
+    channel.on("postgres_changes", { event: "*", schema: "public", table: "owner" }, (payload) => {
+      applyingRemote.current = true;
+      setData(d => {
+        const owner = payload.eventType === "DELETE" ? emptyData.owner : payload.new;
+        lastSynced.current = { ...lastSynced.current, owner };
+        return { ...d, owner };
+      });
     });
     channel.subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Pousse vers Supabase toute modification locale (issue de setData dans l'UI)
+  // Pousse vers Supabase toute modification locale (issue de setData dans l'UI).
+  // Les pushes sont chainees (pushChain) pour ne jamais comparer a un instantane perime.
   useEffect(() => {
     if (applyingRemote.current) { applyingRemote.current = false; return; }
     if (!lastSynced.current) return;
-    const prev = lastSynced.current;
-    const pushArrayDiff = async (table, prevArr, nextArr) => {
-      const nextIds = new Set(nextArr.map(r => r.id));
-      const toDelete = prevArr.filter(r => !nextIds.has(r.id)).map(r => r.id);
-      const toUpsert = nextArr.filter(r => {
-        const old = prevArr.find(p => p.id === r.id);
-        return !old || JSON.stringify(old) !== JSON.stringify(r);
-      });
-      if (toDelete.length) await supabase.from(table).delete().in("id", toDelete);
-      if (toUpsert.length) await supabase.from(table).upsert(toUpsert);
-    };
-    (async () => {
-      await Promise.all([
-        pushArrayDiff("buildings", prev.buildings, data.buildings),
-        pushArrayDiff("apartments", prev.apartments, data.apartments),
-        pushArrayDiff("tenants", prev.tenants, data.tenants),
-        pushArrayDiff("payments", prev.payments, data.payments),
-        pushArrayDiff("maintenances", prev.maintenances, data.maintenances),
-        pushArrayDiff("syndicCharges", prev.syndicCharges, data.syndicCharges),
-      ]);
-      if (JSON.stringify(prev.owner) !== JSON.stringify(data.owner)) {
-        await supabase.from("owner").upsert({ ...data.owner, id: 1 });
+    const snapshotData = data;
+    pushChain.current = pushChain.current.then(async () => {
+      const prev = lastSynced.current;
+      const pushArrayDiff = async (table, prevArr, nextArr) => {
+        const nextIds = new Set(nextArr.map(r => r.id));
+        const toDelete = prevArr.filter(r => !nextIds.has(r.id)).map(r => r.id);
+        const toUpsert = nextArr.filter(r => {
+          const old = prevArr.find(p => p.id === r.id);
+          return !old || JSON.stringify(old) !== JSON.stringify(r);
+        });
+        if (toDelete.length) await supabase.from(table).delete().in("id", toDelete);
+        if (toUpsert.length) await supabase.from(table).upsert(toUpsert);
+      };
+      await Promise.all(TABLES.map(table => pushArrayDiff(table, prev[table], snapshotData[table])));
+      if (JSON.stringify(prev.owner) !== JSON.stringify(snapshotData.owner)) {
+        await supabase.from("owner").upsert({ ...snapshotData.owner, id: 1 });
       }
-      lastSynced.current = JSON.parse(JSON.stringify(data));
-    })();
+      lastSynced.current = JSON.parse(JSON.stringify(snapshotData));
+    });
   }, [data]);
 
   const resetAll = async () => {
@@ -347,7 +369,7 @@ function QuittanceModal({ payment, tenant, apartment, building, owner, onClose }
         <div className="modal-title">Quittance de loyer</div>
         <div className="modal-sub">Apercu — cliquez Imprimer pour generer le PDF</div>
         <div id="quittance-content" className="quittance-preview">
-          <div className="q-header"><h1>Quittance de loyer</h1><p>Periode : {month}</p></div>
+          <div className="q-header"><h1>Quittance de loyer</h1><p>Periode : {month}{tenant.paymentFrequency&&tenant.paymentFrequency!=="mensuel"?` — Paiement ${FREQUENCY_LABELS[tenant.paymentFrequency]?.toLowerCase()}`:""}</p></div>
           <div className="q-grid">
             <div><div className="q-label">Bailleur</div><div className="q-value"><strong>{owner.name}</strong><br/>{owner.address}<br/>{owner.zip} {owner.city}<br/>{owner.email}<br/>{owner.phone}{owner.siret&&<><br/>SIRET : {owner.siret}</>}</div></div>
             <div><div className="q-label">Locataire</div><div className="q-value"><strong>{tenant.name}</strong><br/>{fullAddress}</div></div>
@@ -740,12 +762,13 @@ function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
 }
 
 // ── Tenants ────────────────────────────────────────────────────────────────────
+const FREQUENCY_LABELS = { mensuel: "Mensuel", trimestriel: "Trimestriel", semestriel: "Semestriel", annuel: "Annuel" };
 function Tenants({ data, setData }) {
   const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filterBuilding, setFilterBuilding] = useState(null);
-  const empty = {name:"",email:"",phone:"",apartmentId:"",leaseStart:"",leaseEnd:"",deposit:"",notes:""};
+  const empty = {name:"",email:"",phone:"",apartmentId:"",leaseStart:"",leaseEnd:"",deposit:"",paymentFrequency:"mensuel",notes:""};
   const [form, setForm] = useState(empty);
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
 
@@ -759,7 +782,7 @@ function Tenants({ data, setData }) {
     setShowModal(false);
   };
   const del = (id) => {if(window.confirm("Supprimer ce locataire ?"))setData(d=>({...d,tenants:d.tenants.filter(t=>t.id!==id)}));};
-  const openEdit = (t) => {setEditing(t.id);setForm({...t,deposit:toDisplay(t.deposit,currency)});setShowModal(true);};
+  const openEdit = (t) => {setEditing(t.id);setForm({...t,deposit:toDisplay(t.deposit,currency),paymentFrequency:t.paymentFrequency||"mensuel"});setShowModal(true);};
 
   return (
     <div>
@@ -776,7 +799,7 @@ function Tenants({ data, setData }) {
 
       <div className="card">
         <table>
-          <thead><tr><th>Nom</th><th>Contact</th><th>Appartement</th><th>Immeuble</th><th>Fin bail</th><th>Depot</th><th>Expiration</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Nom</th><th>Contact</th><th>Appartement</th><th>Immeuble</th><th>Frequence</th><th>Fin bail</th><th>Depot</th><th>Expiration</th><th>Actions</th></tr></thead>
           <tbody>
             {filteredTenants.map(t=>{
               const apt=data.apartments.find(a=>a.id===t.apartmentId);
@@ -789,6 +812,7 @@ function Tenants({ data, setData }) {
                   <td><div style={{fontSize:13}}>{t.email}</div><div style={{fontSize:11,color:"var(--t3)"}}>{t.phone}</div></td>
                   <td>{apt?.name||"-"}</td>
                   <td style={{fontSize:12,color:"var(--t3)"}}>{b?.name||"-"}</td>
+                  <td><span className="chip">{FREQUENCY_LABELS[t.paymentFrequency]||"Mensuel"}</span></td>
                   <td className="td-mono">
                     {fmtDate(t.leaseEnd)}
                     {renewalSoon&&<div style={{marginTop:3}}><span className="badge ba" title="Le bail arrive a echeance dans moins de 2 mois">🔔 Renouvellement a anticiper</span></div>}
@@ -823,7 +847,17 @@ function Tenants({ data, setData }) {
               <div className="form-group"><label className="form-label">Debut du bail</label><input className="form-input" type="date" value={form.leaseStart} onChange={e=>upd("leaseStart",e.target.value)}/></div>
               <div className="form-group"><label className="form-label">Fin du bail</label><input className="form-input" type="date" value={form.leaseEnd} onChange={e=>upd("leaseEnd",e.target.value)}/></div>
             </div>
-            <div className="form-group"><label className="form-label">Depot de garantie ({currency})</label><input className="form-input" type="number" value={form.deposit} onChange={e=>upd("deposit",e.target.value)}/></div>
+            <div className="form-row">
+              <div className="form-group"><label className="form-label">Depot de garantie ({currency})</label><input className="form-input" type="number" value={form.deposit} onChange={e=>upd("deposit",e.target.value)}/></div>
+              <div className="form-group"><label className="form-label">Frequence de paiement</label>
+                <select className="form-input" value={form.paymentFrequency} onChange={e=>upd("paymentFrequency",e.target.value)}>
+                  <option value="mensuel">Mensuel</option>
+                  <option value="trimestriel">Trimestriel</option>
+                  <option value="semestriel">Semestriel</option>
+                  <option value="annuel">Annuel</option>
+                </select>
+              </div>
+            </div>
             <div className="form-group"><label className="form-label">Notes</label><textarea className="form-input" value={form.notes} onChange={e=>upd("notes",e.target.value)} rows={2}/></div>
             <div className="modal-actions">
               <button className="btn btn-ghost" onClick={()=>setShowModal(false)}>Annuler</button>
