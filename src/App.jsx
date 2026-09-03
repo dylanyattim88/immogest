@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, createContext, useContext } from "react";
+import * as XLSX from "xlsx";
 import { supabase, TABLES } from "./supabaseClient";
 
 const emptyData = {
@@ -1249,6 +1250,99 @@ function SyndicCharges({ data, setData }) {
   );
 }
 
+// ── Export Excel ─────────────────────────────────────────────────────────────
+function ExportPage({ data }) {
+  const { currency } = useContext(CurrencyContext);
+
+  const buildingName = (id) => data.buildings.find(b=>b.id===id)?.name || "-";
+  const apartmentName = (id) => data.apartments.find(a=>a.id===id)?.name || "-";
+  const apartmentBuildingName = (apartmentId) => { const a=data.apartments.find(a=>a.id===apartmentId); return a?buildingName(a.buildingId):"-"; };
+  const tenantName = (id) => data.tenants.find(t=>t.id===id)?.name || "-";
+  const num = (v) => Math.round(toDisplay(v,currency)*100)/100;
+
+  const exportExcel = () => {
+    const wb = XLSX.utils.book_new();
+
+    const buildingsRows = data.buildings.map(b=>({
+      "Nom": b.name, "Adresse": b.address, "Ville": b.city, "Code postal": b.zip,
+      "Etages": b.floors, "Type": b.type, "Description": b.description,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildingsRows), "Immeubles");
+
+    const apartmentsRows = data.apartments.map(a=>({
+      "Nom": a.name, "Immeuble": buildingName(a.buildingId), "Surface (m2)": a.surface, "Pieces": a.rooms,
+      [`Loyer HC (${currency})`]: num(a.rent), [`Charges (${currency})`]: num(a.charges),
+      "Statut": a.status, "Type": a.type, "Etage": a.floor, "Description": a.description,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(apartmentsRows), "Appartements");
+
+    const tenantsRows = data.tenants.map(t=>({
+      "Nom": t.name, "Email": t.email, "Telephone": t.phone,
+      "Appartement": apartmentName(t.apartmentId), "Immeuble": apartmentBuildingName(t.apartmentId),
+      "Debut bail": t.leaseStart, "Fin bail": t.leaseEnd,
+      [`Depot de garantie (${currency})`]: num(t.deposit),
+      "Frequence de paiement": FREQUENCY_LABELS[t.paymentFrequency]||"Mensuel", "Notes": t.notes,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tenantsRows), "Locataires");
+
+    const paymentsRows = data.payments.map(p=>({
+      "Locataire": tenantName(p.tenantId), "Appartement": apartmentName(p.apartmentId), "Immeuble": apartmentBuildingName(p.apartmentId),
+      [`Montant (${currency})`]: num(p.amount), "Date": p.date, "Type": p.type,
+      "Statut": p.status, "Methode": p.method, "Reference": p.reference,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentsRows), "Paiements");
+
+    const maintRows = data.maintenances.map(m=>({
+      "Appartement": apartmentName(m.apartmentId), "Immeuble": apartmentBuildingName(m.apartmentId),
+      "Description": m.description, "Date": m.date, "Statut": m.status, "Priorite": m.priority,
+      [`Cout (${currency})`]: num(m.cost), "Prestataire": m.provider, "Notes": m.notes,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(maintRows), "Maintenance");
+
+    const syndicRows = data.syndicCharges.map(c=>({
+      "Appartement": apartmentName(c.apartmentId), "Immeuble": apartmentBuildingName(c.apartmentId),
+      [`Montant (${currency})`]: num(c.amount), "Periode": c.period, "Echeance": c.dueDate,
+      "Statut": c.status, "Notes": c.notes,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(syndicRows), "Charges copro");
+
+    const dateStr = new Date().toISOString().split("T")[0];
+    XLSX.writeFile(wb, `immogest-export-${dateStr}.xlsx`);
+  };
+
+  const counts = [
+    ["Immeubles", data.buildings.length],
+    ["Appartements", data.apartments.length],
+    ["Locataires", data.tenants.length],
+    ["Paiements", data.payments.length],
+    ["Interventions maintenance", data.maintenances.length],
+    ["Charges copro", data.syndicCharges.length],
+  ];
+
+  return (
+    <div>
+      <div className="card" style={{padding:28,textAlign:"center"}}>
+        <div style={{fontSize:40,marginBottom:8}}>📊</div>
+        <div style={{fontSize:16,fontWeight:700,color:"var(--t1)",marginBottom:4}}>Exporter toutes les donnees</div>
+        <div style={{fontSize:13,color:"var(--t3)",marginBottom:20}}>Genere un fichier Excel (.xlsx) avec un onglet par categorie : immeubles, appartements, locataires, paiements, maintenance et charges copro. Montants exprimes en {currency}.</div>
+        <button className="btn btn-primary" onClick={exportExcel} style={{padding:"10px 24px",fontSize:14}}>⬇️ Telecharger le fichier Excel</button>
+      </div>
+
+      <div className="card" style={{marginTop:16}}>
+        <div className="card-header"><span className="card-title">Contenu de l'export</span></div>
+        <table>
+          <thead><tr><th>Categorie</th><th>Nombre de lignes</th></tr></thead>
+          <tbody>
+            {counts.map(([label,count])=>(
+              <tr key={label}><td className="td-primary">{label}</td><td className="td-mono">{count}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── Settings ───────────────────────────────────────────────────────────────────
 function Settings({ data, setData, resetAll }) {
   const [form, setForm] = useState({...data.owner});
@@ -1291,6 +1385,7 @@ const NAV = [
   {id:"payments",label:"Paiements",icon:"💶"},
   {id:"syndic",label:"Charges copro",icon:"🏛️"},
   {id:"maintenance",label:"Maintenance",icon:"🔧"},
+  {id:"export",label:"Export Excel",icon:"📊"},
   {id:"settings",label:"Parametres",icon:"⚙️"},
 ];
 const TITLES = {
@@ -1301,6 +1396,7 @@ const TITLES = {
   payments:["Paiements","Loyers et encaissements"],
   syndic:["Charges copro","Appels de fonds par appartement"],
   maintenance:["Maintenance","Travaux et interventions"],
+  export:["Export Excel","Telecharger toutes les donnees"],
   settings:["Parametres","Configuration du compte"],
 };
 
@@ -1378,6 +1474,7 @@ export default function App() {
             {page==="payments"&&<Payments data={data} setData={setData}/>}
             {page==="syndic"&&<SyndicCharges data={data} setData={setData}/>}
             {page==="maintenance"&&<Maintenance data={data} setData={setData}/>}
+            {page==="export"&&<ExportPage data={data}/>}
             {page==="settings"&&<Settings data={data} setData={setData} resetAll={resetAll}/>}
           </div>
         </div>
