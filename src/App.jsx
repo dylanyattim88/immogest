@@ -1261,50 +1261,36 @@ function ExportPage({ data }) {
   const num = (v) => Math.round(toDisplay(v,currency)*100)/100;
 
   const exportExcel = () => {
+    const rows = [];
+    const section = (title, headers, dataRows) => {
+      rows.push([title]);
+      rows.push(headers);
+      dataRows.forEach(r=>rows.push(r));
+      rows.push([]); // ligne vide de separation
+    };
+
+    section("IMMEUBLES", ["Nom","Adresse","Ville","Code postal","Etages","Type","Description"],
+      data.buildings.map(b=>[b.name,b.address,b.city,b.zip,b.floors,b.type,b.description]));
+
+    section("APPARTEMENTS", ["Nom","Immeuble","Surface (m2)","Pieces",`Loyer HC (${currency})`,`Charges (${currency})`,"Statut","Type","Etage","Description"],
+      data.apartments.map(a=>[a.name,buildingName(a.buildingId),a.surface,a.rooms,num(a.rent),num(a.charges),a.status,a.type,a.floor,a.description]));
+
+    section("LOCATAIRES", ["Nom","Email","Telephone","Appartement","Immeuble","Debut bail","Fin bail",`Depot de garantie (${currency})`,"Frequence de paiement","Notes"],
+      data.tenants.map(t=>[t.name,t.email,t.phone,apartmentName(t.apartmentId),apartmentBuildingName(t.apartmentId),t.leaseStart,t.leaseEnd,num(t.deposit),FREQUENCY_LABELS[t.paymentFrequency]||"Mensuel",t.notes]));
+
+    section("PAIEMENTS", ["Locataire","Appartement","Immeuble",`Montant (${currency})`,"Date","Type","Statut","Methode","Reference"],
+      data.payments.map(p=>[tenantName(p.tenantId),apartmentName(p.apartmentId),apartmentBuildingName(p.apartmentId),num(p.amount),p.date,p.type,p.status,p.method,p.reference]));
+
+    section("MAINTENANCE", ["Appartement","Immeuble","Description","Date","Statut","Priorite",`Cout (${currency})`,"Prestataire","Notes"],
+      data.maintenances.map(m=>[apartmentName(m.apartmentId),apartmentBuildingName(m.apartmentId),m.description,m.date,m.status,m.priority,num(m.cost),m.provider,m.notes]));
+
+    section("CHARGES COPRO", ["Appartement","Immeuble",`Montant (${currency})`,"Periode","Echeance","Statut","Notes"],
+      data.syndicCharges.map(c=>[apartmentName(c.apartmentId),apartmentBuildingName(c.apartmentId),num(c.amount),c.period,c.dueDate,c.status,c.notes]));
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [{wch:22},{wch:22},{wch:18},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:24}];
     const wb = XLSX.utils.book_new();
-
-    const buildingsRows = data.buildings.map(b=>({
-      "Nom": b.name, "Adresse": b.address, "Ville": b.city, "Code postal": b.zip,
-      "Etages": b.floors, "Type": b.type, "Description": b.description,
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildingsRows), "Immeubles");
-
-    const apartmentsRows = data.apartments.map(a=>({
-      "Nom": a.name, "Immeuble": buildingName(a.buildingId), "Surface (m2)": a.surface, "Pieces": a.rooms,
-      [`Loyer HC (${currency})`]: num(a.rent), [`Charges (${currency})`]: num(a.charges),
-      "Statut": a.status, "Type": a.type, "Etage": a.floor, "Description": a.description,
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(apartmentsRows), "Appartements");
-
-    const tenantsRows = data.tenants.map(t=>({
-      "Nom": t.name, "Email": t.email, "Telephone": t.phone,
-      "Appartement": apartmentName(t.apartmentId), "Immeuble": apartmentBuildingName(t.apartmentId),
-      "Debut bail": t.leaseStart, "Fin bail": t.leaseEnd,
-      [`Depot de garantie (${currency})`]: num(t.deposit),
-      "Frequence de paiement": FREQUENCY_LABELS[t.paymentFrequency]||"Mensuel", "Notes": t.notes,
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tenantsRows), "Locataires");
-
-    const paymentsRows = data.payments.map(p=>({
-      "Locataire": tenantName(p.tenantId), "Appartement": apartmentName(p.apartmentId), "Immeuble": apartmentBuildingName(p.apartmentId),
-      [`Montant (${currency})`]: num(p.amount), "Date": p.date, "Type": p.type,
-      "Statut": p.status, "Methode": p.method, "Reference": p.reference,
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentsRows), "Paiements");
-
-    const maintRows = data.maintenances.map(m=>({
-      "Appartement": apartmentName(m.apartmentId), "Immeuble": apartmentBuildingName(m.apartmentId),
-      "Description": m.description, "Date": m.date, "Statut": m.status, "Priorite": m.priority,
-      [`Cout (${currency})`]: num(m.cost), "Prestataire": m.provider, "Notes": m.notes,
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(maintRows), "Maintenance");
-
-    const syndicRows = data.syndicCharges.map(c=>({
-      "Appartement": apartmentName(c.apartmentId), "Immeuble": apartmentBuildingName(c.apartmentId),
-      [`Montant (${currency})`]: num(c.amount), "Periode": c.period, "Echeance": c.dueDate,
-      "Statut": c.status, "Notes": c.notes,
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(syndicRows), "Charges copro");
+    XLSX.utils.book_append_sheet(wb, ws, "ImmoGest");
 
     const dateStr = new Date().toISOString().split("T")[0];
     XLSX.writeFile(wb, `immogest-export-${dateStr}.xlsx`);
@@ -1324,7 +1310,7 @@ function ExportPage({ data }) {
       <div className="card" style={{padding:28,textAlign:"center"}}>
         <div style={{fontSize:40,marginBottom:8}}>📊</div>
         <div style={{fontSize:16,fontWeight:700,color:"var(--t1)",marginBottom:4}}>Exporter toutes les donnees</div>
-        <div style={{fontSize:13,color:"var(--t3)",marginBottom:20}}>Genere un fichier Excel (.xlsx) avec un onglet par categorie : immeubles, appartements, locataires, paiements, maintenance et charges copro. Montants exprimes en {currency}.</div>
+        <div style={{fontSize:13,color:"var(--t3)",marginBottom:20}}>Genere un fichier Excel (.xlsx) avec un seul tableau reprenant toutes les sections (immeubles, appartements, locataires, paiements, maintenance, charges copro), les unes en dessous des autres. Montants exprimes en {currency}.</div>
         <button className="btn btn-primary" onClick={exportExcel} style={{padding:"10px 24px",fontSize:14}}>⬇️ Telecharger le fichier Excel</button>
       </div>
 
