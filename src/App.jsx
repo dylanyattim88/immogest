@@ -416,6 +416,7 @@ function Dashboard({ data }) {
     const revenus = loues.reduce((s,a)=>s+a.rent+a.charges,0);
     return {...b, total:apts.length, loues:loues.length, revenus};
   });
+  const buildingsWithRevenue = buildingStats.filter(b=>b.revenus>0);
 
   return (
     <div>
@@ -437,6 +438,15 @@ function Dashboard({ data }) {
           <div className="stat-top"><span className="stat-label">Revenus mensuels</span><div className="stat-icon-wrap" style={{background:"#f0fdf4"}}>💶</div></div>
           <div className="stat-value" style={{fontSize:20}}>{fmt(totalRent,currency)}</div>
           <div className="stat-delta green">Loyers + charges</div>
+          {buildingsWithRevenue.length>0&&(
+            <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid var(--border)",display:"flex",flexDirection:"column",gap:2}}>
+              {buildingsWithRevenue.map(b=>(
+                <div key={b.id} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--t3)"}}>
+                  <span>{b.name}</span><span style={{fontWeight:600,color:"var(--t2)"}}>{fmt(b.revenus,currency)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="stat-card">
           <div className="stat-top"><span className="stat-label">Total encaisse</span><div className="stat-icon-wrap" style={{background:"#fffbeb"}}>📊</div></div>
@@ -876,6 +886,7 @@ function Payments({ data, setData }) {
   const [showModal, setShowModal] = useState(false);
   const [quittance, setQuittance] = useState(null);
   const [filterBuilding, setFilterBuilding] = useState(null);
+  const [view, setView] = useState("liste");
   const empty = {tenantId:"",apartmentId:"",amount:"",date:new Date().toISOString().split("T")[0],type:"Loyer + charges",status:"paye",method:"virement",reference:""};
   const [form, setForm] = useState(empty);
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
@@ -900,6 +911,17 @@ function Payments({ data, setData }) {
   const totalPaye = filteredPayments.filter(p=>p.status==="paye").reduce((s,p)=>s+p.amount,0);
   const totalRetard = filteredPayments.filter(p=>p.status==="en retard").reduce((s,p)=>s+p.amount,0);
 
+  // Recap par mois
+  const monthlyMap = {};
+  filteredPayments.forEach(p=>{
+    const key = p.date ? p.date.slice(0,7) : "inconnu"; // YYYY-MM
+    if(!monthlyMap[key]) monthlyMap[key] = {key, paye:0, retard:0, count:0};
+    monthlyMap[key].count += 1;
+    if(p.status==="paye") monthlyMap[key].paye += p.amount;
+    else if(p.status==="en retard") monthlyMap[key].retard += p.amount;
+  });
+  const monthlyRecap = Object.values(monthlyMap).sort((a,b)=>b.key.localeCompare(a.key));
+
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -910,12 +932,36 @@ function Payments({ data, setData }) {
         <button className="btn btn-primary" onClick={()=>{setForm(empty);setShowModal(true);}}>+ Enregistrer un paiement</button>
       </div>
 
-      <div className="filter-bar">
-        <span className="filter-label">Immeuble :</span>
-        <button className={`filter-btn ${!filterBuilding?"active":""}`} onClick={()=>setFilterBuilding(null)}>Tous</button>
-        {data.buildings.map(b=><button key={b.id} className={`filter-btn ${filterBuilding===b.id?"active":""}`} onClick={()=>setFilterBuilding(b.id)}>{b.name}</button>)}
+      <div className="filter-bar" style={{justifyContent:"space-between"}}>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <span className="filter-label">Immeuble :</span>
+          <button className={`filter-btn ${!filterBuilding?"active":""}`} onClick={()=>setFilterBuilding(null)}>Tous</button>
+          {data.buildings.map(b=><button key={b.id} className={`filter-btn ${filterBuilding===b.id?"active":""}`} onClick={()=>setFilterBuilding(b.id)}>{b.name}</button>)}
+        </div>
+        <div style={{display:"flex",border:"1px solid var(--border)",borderRadius:6,overflow:"hidden"}}>
+          <button onClick={()=>setView("liste")} style={{padding:"5px 12px",fontSize:12,fontWeight:600,border:"none",cursor:"pointer",background:view==="liste"?"var(--accent)":"var(--white)",color:view==="liste"?"#fff":"var(--t2)"}}>Liste</button>
+          <button onClick={()=>setView("mois")} style={{padding:"5px 12px",fontSize:12,fontWeight:600,border:"none",cursor:"pointer",background:view==="mois"?"var(--accent)":"var(--white)",color:view==="mois"?"#fff":"var(--t2)"}}>Par mois</button>
+        </div>
       </div>
 
+      {view==="mois"?(
+        <div className="card">
+          <table>
+            <thead><tr><th>Mois</th><th>Nb paiements</th><th>Encaisse</th><th>En attente</th></tr></thead>
+            <tbody>
+              {monthlyRecap.map(m=>(
+                <tr key={m.key}>
+                  <td className="td-primary" style={{textTransform:"capitalize"}}>{m.key==="inconnu"?"Date inconnue":monthName(m.key+"-01")}</td>
+                  <td className="td-mono">{m.count}</td>
+                  <td className="td-mono" style={{fontWeight:700,color:"var(--green)"}}>{fmt(m.paye,currency)}</td>
+                  <td className="td-mono" style={{fontWeight:700,color:m.retard>0?"var(--red)":"var(--t3)"}}>{m.retard>0?fmt(m.retard,currency):"-"}</td>
+                </tr>
+              ))}
+              {monthlyRecap.length===0&&<tr><td colSpan={4}><div className="empty"><div className="empty-icon">📅</div><div className="empty-text">Aucun paiement enregistre</div></div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      ):(
       <div className="card">
         <table>
           <thead><tr><th>Locataire</th><th>Appartement</th><th>Immeuble</th><th>Montant</th><th>Date</th><th>Methode</th><th>Statut</th><th>Actions</th></tr></thead>
@@ -946,6 +992,7 @@ function Payments({ data, setData }) {
           </tbody>
         </table>
       </div>
+      )}
 
       {showModal&&(
         <div className="overlay" onClick={e=>e.target===e.currentTarget&&setShowModal(false)}>
