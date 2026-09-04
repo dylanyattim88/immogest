@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext } from "react";
 import * as XLSX from "xlsx";
 import { supabase, TABLES } from "./supabaseClient";
 
@@ -32,12 +32,13 @@ const monthName = (d) => new Date(d).toLocaleDateString("fr-FR", { month: "long"
 const daysUntil = (d) => Math.ceil((new Date(d) - new Date()) / 86400000);
 
 // ── Synchronisation Supabase (temps reel, partagee entre tous les utilisateurs) ─
+// Chaque action (ajout/modif/suppression) declenche une operation Supabase ciblee et directe,
+// sur la ligne concernee uniquement. Aucune comparaison globale entre "avant/apres" n'est faite :
+// c'est ce qui provoquait le bug de suppressions en masse quand plusieurs onglets/appareils
+// etaient ouverts en meme temps (un instantane perime pouvait etre interprete comme "a supprimer").
 function useSupabaseData() {
   const [data, setData] = useState(emptyData);
   const [loading, setLoading] = useState(true);
-  const lastSynced = useRef(null);
-  const applyingRemote = useRef(false);
-  const pushChain = useRef(Promise.resolve());
 
   const fetchAll = async () => {
     const [b, a, t, p, m, s, o] = await Promise.all([
@@ -49,7 +50,7 @@ function useSupabaseData() {
       supabase.from("syndicCharges").select("*").order("id"),
       supabase.from("owner").select("*").eq("id", 1).maybeSingle(),
     ]);
-    const next = {
+    setData({
       buildings: b.data || [],
       apartments: a.data || [],
       tenants: t.data || [],
@@ -57,22 +58,17 @@ function useSupabaseData() {
       maintenances: m.data || [],
       syndicCharges: s.data || [],
       owner: o.data || emptyData.owner,
-    };
-    applyingRemote.current = true;
-    lastSynced.current = JSON.parse(JSON.stringify(next));
-    setData(next);
+    });
     setLoading(false);
   };
 
   useEffect(() => {
     fetchAll();
     const channel = supabase.channel("immogest-realtime");
-    // Applique chaque changement recu (insert/update/delete) directement sur la ligne concernee,
-    // au lieu de recharger toute la base a chaque fois : ca evite qu'un rechargement en retard
-    // n'ecrase des donnees ajoutees entre-temps par le meme utilisateur (bug "le 2e remplace le 1er").
+    // Applique chaque changement recu (le sien ou celui d'un autre utilisateur/onglet) directement
+    // sur la ligne concernee : jamais de remplacement en masse d'une table entiere.
     TABLES.forEach(table => {
       channel.on("postgres_changes", { event: "*", schema: "public", table }, (payload) => {
-        applyingRemote.current = true;
         setData(d => {
           let arr = d[table];
           if (payload.eventType === "INSERT") {
@@ -82,56 +78,43 @@ function useSupabaseData() {
           } else if (payload.eventType === "DELETE") {
             arr = arr.filter(r => r.id !== payload.old.id);
           }
-          const next = { ...d, [table]: arr };
-          lastSynced.current = { ...lastSynced.current, [table]: arr };
-          return next;
+          return { ...d, [table]: arr };
         });
       });
     });
     channel.on("postgres_changes", { event: "*", schema: "public", table: "owner" }, (payload) => {
-      applyingRemote.current = true;
-      setData(d => {
-        const owner = payload.eventType === "DELETE" ? emptyData.owner : payload.new;
-        lastSynced.current = { ...lastSynced.current, owner };
-        return { ...d, owner };
-      });
+      setData(d => ({ ...d, owner: payload.eventType === "DELETE" ? emptyData.owner : payload.new }));
     });
     channel.subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Pousse vers Supabase toute modification locale (issue de setData dans l'UI).
-  // Les pushes sont chainees (pushChain) pour ne jamais comparer a un instantane perime.
-  useEffect(() => {
-    if (applyingRemote.current) { applyingRemote.current = false; return; }
-    if (!lastSynced.current) return;
-    const snapshotData = data;
-    pushChain.current = pushChain.current.then(async () => {
-      const prev = lastSynced.current;
-      const pushArrayDiff = async (table, prevArr, nextArr) => {
-        const nextIds = new Set(nextArr.map(r => r.id));
-        const toDelete = prevArr.filter(r => !nextIds.has(r.id)).map(r => r.id);
-        const toUpsert = nextArr.filter(r => {
-          const old = prevArr.find(p => p.id === r.id);
-          return !old || JSON.stringify(old) !== JSON.stringify(r);
-        });
-        if (toDelete.length) await supabase.from(table).delete().in("id", toDelete);
-        if (toUpsert.length) await supabase.from(table).upsert(toUpsert);
-      };
-      await Promise.all(TABLES.map(table => pushArrayDiff(table, prev[table], snapshotData[table])));
-      if (JSON.stringify(prev.owner) !== JSON.stringify(snapshotData.owner)) {
-        await supabase.from("owner").upsert({ ...snapshotData.owner, id: 1 });
-      }
-      lastSynced.current = JSON.parse(JSON.stringify(snapshotData));
-    });
-  }, [data]);
+  // Ajoute une ligne : mise a jour locale immediate (reactivite) + insertion Supabase ciblee.
+  const addRow = (table, row) => {
+    setData(d => ({ ...d, [table]: [...d[table], row] }));
+    supabase.from(table).insert(row).then(({ error }) => { if (error) console.error(`insert ${table}`, error); });
+  };
+  // Modifie une ligne existante par son id, uniquement celle-la.
+  const updateRow = (table, row) => {
+    setData(d => ({ ...d, [table]: d[table].map(r => r.id === row.id ? row : r) }));
+    supabase.from(table).update(row).eq("id", row.id).then(({ error }) => { if (error) console.error(`update ${table}`, error); });
+  };
+  // Supprime une ligne par son id, uniquement celle-la.
+  const deleteRow = (table, id) => {
+    setData(d => ({ ...d, [table]: d[table].filter(r => r.id !== id) }));
+    supabase.from(table).delete().eq("id", id).then(({ error }) => { if (error) console.error(`delete ${table}`, error); });
+  };
+  const saveOwner = (owner) => {
+    setData(d => ({ ...d, owner }));
+    supabase.from("owner").upsert({ ...owner, id: 1 }).then(({ error }) => { if (error) console.error("update owner", error); });
+  };
 
   const resetAll = async () => {
     for (const table of TABLES) await supabase.from(table).delete().gte("id", 0);
     await fetchAll();
   };
 
-  return { data, setData, loading, resetAll };
+  return { data, addRow, updateRow, deleteRow, saveOwner, loading, resetAll };
 }
 
 const css = `
@@ -554,7 +537,7 @@ function Dashboard({ data }) {
 }
 
 // ── Buildings ──────────────────────────────────────────────────────────────────
-function Buildings({ data, setData, setPage, setSelectedBuilding }) {
+function Buildings({ data, addRow, updateRow, deleteRow, setPage, setSelectedBuilding }) {
   const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -566,13 +549,13 @@ function Buildings({ data, setData, setPage, setSelectedBuilding }) {
   const openEdit = (b) => {setEditing(b.id);setForm({...b});setShowModal(true);};
   const save = () => {
     const parsed = {...form,floors:+form.floors};
-    if (editing) setData(d=>({...d,buildings:d.buildings.map(b=>b.id===editing?{...parsed,id:editing}:b)}));
-    else setData(d=>({...d,buildings:[...d.buildings,{...parsed,id:Date.now()}]}));
+    if (editing) updateRow("buildings",{...parsed,id:editing});
+    else addRow("buildings",{...parsed,id:Date.now()});
     setShowModal(false);
   };
   const del = (id) => {
     if (data.apartments.some(a=>a.buildingId===id)) { alert("Supprimez d'abord les appartements de cet immeuble."); return; }
-    if (window.confirm("Supprimer cet immeuble ?")) setData(d=>({...d,buildings:d.buildings.filter(b=>b.id!==id)}));
+    if (window.confirm("Supprimer cet immeuble ?")) deleteRow("buildings",id);
   };
 
   const getBuildingStats = (b) => {
@@ -666,7 +649,7 @@ function Buildings({ data, setData, setPage, setSelectedBuilding }) {
 }
 
 // ── Apartments ─────────────────────────────────────────────────────────────────
-function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
+function Apartments({ data, addRow, updateRow, deleteRow, selectedBuilding, setSelectedBuilding }) {
   const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -680,11 +663,11 @@ function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
   const openEdit = (a) => {setEditing(a.id);setForm({...a,rent:toDisplay(a.rent,currency),charges:toDisplay(a.charges,currency)});setShowModal(true);};
   const save = () => {
     const parsed = {...form,buildingId:+form.buildingId,rent:toStorage(form.rent,currency),charges:toStorage(form.charges,currency),surface:+form.surface,rooms:+form.rooms,floor:+form.floor};
-    if (editing) setData(d=>({...d,apartments:d.apartments.map(a=>a.id===editing?{...parsed,id:editing}:a)}));
-    else setData(d=>({...d,apartments:[...d.apartments,{...parsed,id:Date.now()}]}));
+    if (editing) updateRow("apartments",{...parsed,id:editing});
+    else addRow("apartments",{...parsed,id:Date.now()});
     setShowModal(false);
   };
-  const del = (id) => {if(window.confirm("Supprimer cet appartement ?"))setData(d=>({...d,apartments:d.apartments.filter(a=>a.id!==id)}));};
+  const del = (id) => {if(window.confirm("Supprimer cet appartement ?"))deleteRow("apartments",id);};
 
   const selectedBuildingObj = selectedBuilding ? data.buildings.find(b=>b.id===selectedBuilding) : null;
 
@@ -774,7 +757,7 @@ function Apartments({ data, setData, selectedBuilding, setSelectedBuilding }) {
 
 // ── Tenants ────────────────────────────────────────────────────────────────────
 const FREQUENCY_LABELS = { mensuel: "Mensuel", trimestriel: "Trimestriel", semestriel: "Semestriel", annuel: "Annuel" };
-function Tenants({ data, setData }) {
+function Tenants({ data, addRow, updateRow, deleteRow }) {
   const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -788,11 +771,11 @@ function Tenants({ data, setData }) {
 
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,deposit:toStorage(form.deposit,currency)};
-    if (editing) setData(d=>({...d,tenants:d.tenants.map(t=>t.id===editing?{...parsed,id:editing}:t)}));
-    else setData(d=>({...d,tenants:[...d.tenants,{...parsed,id:Date.now()}]}));
+    if (editing) updateRow("tenants",{...parsed,id:editing});
+    else addRow("tenants",{...parsed,id:Date.now()});
     setShowModal(false);
   };
-  const del = (id) => {if(window.confirm("Supprimer ce locataire ?"))setData(d=>({...d,tenants:d.tenants.filter(t=>t.id!==id)}));};
+  const del = (id) => {if(window.confirm("Supprimer ce locataire ?"))deleteRow("tenants",id);};
   const openEdit = (t) => {setEditing(t.id);setForm({...t,deposit:toDisplay(t.deposit,currency),paymentFrequency:t.paymentFrequency||"mensuel"});setShowModal(true);};
 
   return (
@@ -882,7 +865,7 @@ function Tenants({ data, setData }) {
 }
 
 // ── Payments ───────────────────────────────────────────────────────────────────
-function Payments({ data, setData }) {
+function Payments({ data, addRow, updateRow, deleteRow }) {
   const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [quittance, setQuittance] = useState(null);
@@ -896,11 +879,11 @@ function Payments({ data, setData }) {
   const filteredPayments = data.payments.filter(p=>filteredApts.some(a=>a.id===p.apartmentId));
 
   const save = () => {
-    setData(d=>({...d,payments:[...d.payments,{...form,id:Date.now(),tenantId:+form.tenantId,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)}]}));
+    addRow("payments",{...form,id:Date.now(),tenantId:+form.tenantId,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)});
     setShowModal(false);
   };
-  const toggle = (id) => setData(d=>({...d,payments:d.payments.map(p=>p.id===id?{...p,status:p.status==="paye"?"en retard":"paye"}:p)}));
-  const del = (id) => {if(window.confirm("Supprimer ce paiement ?"))setData(d=>({...d,payments:d.payments.filter(p=>p.id!==id)}));};
+  const toggle = (p) => updateRow("payments",{...p,status:p.status==="paye"?"en retard":"paye"});
+  const del = (id) => {if(window.confirm("Supprimer ce paiement ?"))deleteRow("payments",id);};
 
   const openQuittance = (p) => {
     const t=data.tenants.find(t=>t.id===p.tenantId);
@@ -983,7 +966,7 @@ function Payments({ data, setData }) {
                   <td>
                     <div style={{display:"flex",gap:5}}>
                       {p.status==="paye"&&<button className="btn btn-success btn-sm" onClick={()=>openQuittance(p)}>Quittance</button>}
-                      <button className="btn btn-ghost btn-sm" onClick={()=>toggle(p.id)}>Basculer</button>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>toggle(p)}>Basculer</button>
                       <button className="btn btn-danger btn-sm" onClick={()=>del(p.id)}>X</button>
                     </div>
                   </td>
@@ -1051,7 +1034,7 @@ function Payments({ data, setData }) {
 }
 
 // ── Maintenance ────────────────────────────────────────────────────────────────
-function Maintenance({ data, setData }) {
+function Maintenance({ data, addRow, updateRow, deleteRow }) {
   const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -1065,13 +1048,13 @@ function Maintenance({ data, setData }) {
 
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,cost:toStorage(form.cost,currency)};
-    if(editing) setData(d=>({...d,maintenances:d.maintenances.map(m=>m.id===editing?{...parsed,id:editing}:m)}));
-    else setData(d=>({...d,maintenances:[...d.maintenances,{...parsed,id:Date.now()}]}));
+    if(editing) updateRow("maintenances",{...parsed,id:editing});
+    else addRow("maintenances",{...parsed,id:Date.now()});
     setShowModal(false);
   };
   const next = {"planifie":"en cours","en cours":"termine","termine":"planifie"};
-  const advance = (id) => setData(d=>({...d,maintenances:d.maintenances.map(m=>m.id===id?{...m,status:next[m.status]}:m)}));
-  const del = (id) => {if(window.confirm("Supprimer ?"))setData(d=>({...d,maintenances:d.maintenances.filter(m=>m.id!==id)}));};
+  const advance = (m) => updateRow("maintenances",{...m,status:next[m.status]});
+  const del = (id) => {if(window.confirm("Supprimer ?"))deleteRow("maintenances",id);};
   const openEdit = (m) => {setEditing(m.id);setForm({...m,cost:toDisplay(m.cost,currency)});setShowModal(true);};
 
   const totalCout = filteredMaints.reduce((s,m)=>s+(m.cost||0),0);
@@ -1105,7 +1088,7 @@ function Maintenance({ data, setData }) {
                   <td className="td-mono">{fmtDate(m.date)}</td>
                   <td className="td-mono">{m.cost?fmt(m.cost,currency):"-"}</td>
                   <td><Badge status={m.status}/></td>
-                  <td><div style={{display:"flex",gap:5}}><button className="btn btn-ghost btn-sm" onClick={()=>advance(m.id)}>Avancer</button><button className="btn btn-ghost btn-sm" onClick={()=>openEdit(m)}>Editer</button><button className="btn btn-danger btn-sm" onClick={()=>del(m.id)}>X</button></div></td>
+                  <td><div style={{display:"flex",gap:5}}><button className="btn btn-ghost btn-sm" onClick={()=>advance(m)}>Avancer</button><button className="btn btn-ghost btn-sm" onClick={()=>openEdit(m)}>Editer</button><button className="btn btn-danger btn-sm" onClick={()=>del(m.id)}>X</button></div></td>
                 </tr>
               );
             })}
@@ -1154,7 +1137,7 @@ function Maintenance({ data, setData }) {
 }
 
 // ── Charges de copropriete (appels de fonds) ────────────────────────────────────
-function SyndicCharges({ data, setData }) {
+function SyndicCharges({ data, addRow, updateRow, deleteRow }) {
   const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -1168,11 +1151,11 @@ function SyndicCharges({ data, setData }) {
 
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)};
-    if(editing) setData(d=>({...d,syndicCharges:d.syndicCharges.map(c=>c.id===editing?{...parsed,id:editing}:c)}));
-    else setData(d=>({...d,syndicCharges:[...d.syndicCharges,{...parsed,id:Date.now()}]}));
+    if(editing) updateRow("syndicCharges",{...parsed,id:editing});
+    else addRow("syndicCharges",{...parsed,id:Date.now()});
     setShowModal(false);
   };
-  const del = (id) => {if(window.confirm("Supprimer cet appel de fonds ?"))setData(d=>({...d,syndicCharges:d.syndicCharges.filter(c=>c.id!==id)}));};
+  const del = (id) => {if(window.confirm("Supprimer cet appel de fonds ?"))deleteRow("syndicCharges",id);};
   const openNew = () => {setEditing(null);setForm(empty);setShowModal(true);};
   const openEdit = (c) => {setEditing(c.id);setForm({...c,amount:toDisplay(c.amount,currency)});setShowModal(true);};
 
@@ -1330,11 +1313,11 @@ function ExportPage({ data }) {
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────────
-function Settings({ data, setData, resetAll }) {
+function Settings({ data, saveOwner, resetAll }) {
   const [form, setForm] = useState({...data.owner});
   const [saved, setSaved] = useState(false);
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
-  const save = () => {setData(d=>({...d,owner:{...form}}));setSaved(true);setTimeout(()=>setSaved(false),2500);};
+  const save = () => {saveOwner({...form});setSaved(true);setTimeout(()=>setSaved(false),2500);};
   return (
     <div style={{maxWidth:580}}>
       <div style={{fontSize:13,color:"var(--t2)",marginBottom:20}}>Ces informations apparaissent sur les <strong>quittances de loyer</strong>.</div>
@@ -1389,7 +1372,7 @@ const TITLES = {
 export default function App() {
   const [page, setPage] = useState("dashboard");
   const [selectedBuilding, setSelectedBuilding] = useState(null);
-  const { data, setData, loading, resetAll } = useSupabaseData();
+  const { data, addRow, updateRow, deleteRow, saveOwner, loading, resetAll } = useSupabaseData();
   const [currency, setCurrency] = useState(() => localStorage.getItem("immogest_currency") || "FCFA");
   useEffect(() => { localStorage.setItem("immogest_currency", currency); }, [currency]);
 
@@ -1454,14 +1437,14 @@ export default function App() {
           </div>
           <div className="content">
             {page==="dashboard"&&<Dashboard data={data}/>}
-            {page==="buildings"&&<Buildings data={data} setData={setData} setPage={setPage} setSelectedBuilding={setSelectedBuilding}/>}
-            {page==="apartments"&&<Apartments data={data} setData={setData} selectedBuilding={selectedBuilding} setSelectedBuilding={setSelectedBuilding}/>}
-            {page==="tenants"&&<Tenants data={data} setData={setData}/>}
-            {page==="payments"&&<Payments data={data} setData={setData}/>}
-            {page==="syndic"&&<SyndicCharges data={data} setData={setData}/>}
-            {page==="maintenance"&&<Maintenance data={data} setData={setData}/>}
+            {page==="buildings"&&<Buildings data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow} setPage={setPage} setSelectedBuilding={setSelectedBuilding}/>}
+            {page==="apartments"&&<Apartments data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow} selectedBuilding={selectedBuilding} setSelectedBuilding={setSelectedBuilding}/>}
+            {page==="tenants"&&<Tenants data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
+            {page==="payments"&&<Payments data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
+            {page==="syndic"&&<SyndicCharges data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
+            {page==="maintenance"&&<Maintenance data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
             {page==="export"&&<ExportPage data={data}/>}
-            {page==="settings"&&<Settings data={data} setData={setData} resetAll={resetAll}/>}
+            {page==="settings"&&<Settings data={data} saveOwner={saveOwner} resetAll={resetAll}/>}
           </div>
         </div>
       </div>
