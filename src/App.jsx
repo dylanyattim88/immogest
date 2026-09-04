@@ -1130,7 +1130,14 @@ function Maintenance({ data, addRow, updateRow, deleteRow }) {
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
 
   const filteredApts = filterBuilding ? data.apartments.filter(a=>a.buildingId===filterBuilding) : data.apartments;
-  const filteredMaints = data.maintenances.filter(m=>filteredApts.some(a=>a.id===m.apartmentId));
+  const filteredMaints = data.maintenances
+    .filter(m=>filteredApts.some(a=>a.id===m.apartmentId))
+    .sort((a,b)=>{
+      const aDone = a.status==="termine" ? 1 : 0;
+      const bDone = b.status==="termine" ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone; // termine toujours a la fin
+      return new Date(b.date) - new Date(a.date); // sinon plus recent d'abord
+    });
 
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,cost:toStorage(form.cost,currency)};
