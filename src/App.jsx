@@ -1,5 +1,6 @@
 import { useState, useEffect, createContext, useContext } from "react";
 import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
 import { supabase, TABLES } from "./supabaseClient";
 
 const emptyData = {
@@ -324,6 +325,90 @@ function QuittanceModal({ payment, tenant, apartment, building, owner, onClose }
   const { currency } = useContext(CurrencyContext);
   const month = monthName(payment.date);
   const fullAddress = building ? `${apartment.name} — ${building.address}, ${building.zip} ${building.city}` : apartment.name;
+  const periodLine = `Periode : ${month}` + (tenant.paymentFrequency && tenant.paymentFrequency!=="mensuel" ? ` — Paiement ${FREQUENCY_LABELS[tenant.paymentFrequency]?.toLowerCase()}` : "");
+
+  const downloadPdf = () => {
+    // jsPDF (polices standards) ne supporte pas l'espace fine insecable utilisee par
+    // toLocaleString("fr-FR") pour separer les milliers : on la remplace par un espace normal.
+    const pdfFmt = (n) => fmt(n,currency).replace(/[\u202F\u00A0]/g," ");
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const pageWidth = 210;
+    const marginX = 20;
+    let y = 25;
+
+    doc.setFont("times", "bold");
+    doc.setFontSize(18);
+    doc.text("QUITTANCE DE LOYER", pageWidth/2, y, { align: "center" });
+    y += 7;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(90);
+    doc.text(periodLine, pageWidth/2, y, { align: "center" });
+    y += 5;
+    doc.setDrawColor(20);
+    doc.setLineWidth(0.6);
+    doc.line(marginX, y, pageWidth-marginX, y);
+    y += 12;
+
+    const colWidth = (pageWidth - marginX*2 - 10)/2;
+    const col1X = marginX, col2X = marginX + colWidth + 10;
+    doc.setTextColor(140); doc.setFontSize(8); doc.setFont("helvetica","bold");
+    doc.text("BAILLEUR", col1X, y);
+    doc.text("LOCATAIRE", col2X, y);
+    y += 5;
+
+    const ownerLines = [owner.name, owner.address, `${owner.zip} ${owner.city}`, owner.email, owner.phone].filter(Boolean);
+    if (owner.siret) ownerLines.push(`SIRET : ${owner.siret}`);
+    const tenantLines = [tenant.name, fullAddress];
+
+    let y1 = y, y2 = y;
+    doc.setTextColor(20); doc.setFontSize(10);
+    ownerLines.forEach((line,i)=>{ doc.setFont("helvetica", i===0?"bold":"normal"); doc.text(String(line), col1X, y1, {maxWidth: colWidth}); y1+=5; });
+    tenantLines.forEach((line,i)=>{ doc.setFont("helvetica", i===0?"bold":"normal"); doc.text(String(line), col2X, y2, {maxWidth: colWidth}); y2+=5; });
+    y = Math.max(y1,y2) + 6;
+
+    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(140);
+    doc.text("BIEN LOUE", marginX, y);
+    y += 5;
+    doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(20);
+    doc.text(`${fullAddress} — ${apartment.surface} m2 — ${apartment.rooms} piece(s)`, marginX, y, {maxWidth: pageWidth-marginX*2});
+    y += 10;
+
+    const boxHeight = 30;
+    doc.setFillColor(248,249,250);
+    doc.setDrawColor(220);
+    doc.roundedRect(marginX, y, pageWidth-marginX*2, boxHeight, 2, 2, "FD");
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(100);
+    doc.text(`Somme recue de ${tenant.name} pour le mois de ${month}`, marginX+6, y+8);
+    doc.setFont("helvetica","bold"); doc.setFontSize(20); doc.setTextColor(20);
+    doc.text(pdfFmt(payment.amount), marginX+6, y+18);
+    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(140);
+    let detailLine = `Dont loyer : ${pdfFmt(apartment.rent)} — Dont charges : ${pdfFmt(apartment.charges)}`;
+    if (payment.method) detailLine += ` — Paiement par ${payment.method}`;
+    if (payment.reference) detailLine += ` (${payment.reference})`;
+    doc.text(detailLine, marginX+6, y+25, {maxWidth: pageWidth-marginX*2-12});
+    y += boxHeight + 20;
+
+    const sigWidth = 60;
+    doc.setDrawColor(200);
+    doc.line(marginX, y, marginX+sigWidth, y);
+    doc.line(pageWidth-marginX-sigWidth, y, pageWidth-marginX, y);
+    y += 5;
+    doc.setFontSize(8); doc.setTextColor(140); doc.setFont("helvetica","normal");
+    doc.text("Signature du bailleur", marginX, y);
+    doc.text("Date d'emission", pageWidth-marginX-sigWidth, y);
+    y += 5;
+    doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(50);
+    doc.text(owner.name||"", marginX, y);
+    doc.text(fmtDate(new Date().toISOString().split("T")[0]), pageWidth-marginX-sigWidth, y);
+
+    doc.setFont("helvetica","normal"); doc.setFontSize(7); doc.setTextColor(170);
+    doc.text("Document genere via ImmoGest — A valeur de recu de paiement de loyer", pageWidth/2, 285, {align:"center"});
+
+    const safeName = (tenant.name||"locataire").replace(/[^a-z0-9]+/gi,"_");
+    doc.save(`quittance-${safeName}-${payment.date}.pdf`);
+  };
+
   const print = () => {
     const content = document.getElementById("quittance-content").innerHTML;
     const win = window.open("","_blank");
@@ -351,9 +436,9 @@ function QuittanceModal({ payment, tenant, apartment, building, owner, onClose }
     <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="modal modal-lg">
         <div className="modal-title">Quittance de loyer</div>
-        <div className="modal-sub">Apercu — cliquez Imprimer pour generer le PDF</div>
+        <div className="modal-sub">Apercu — telechargez le PDF ou imprimez directement</div>
         <div id="quittance-content" className="quittance-preview">
-          <div className="q-header"><h1>Quittance de loyer</h1><p>Periode : {month}{tenant.paymentFrequency&&tenant.paymentFrequency!=="mensuel"?` — Paiement ${FREQUENCY_LABELS[tenant.paymentFrequency]?.toLowerCase()}`:""}</p></div>
+          <div className="q-header"><h1>Quittance de loyer</h1><p>{periodLine}</p></div>
           <div className="q-grid">
             <div><div className="q-label">Bailleur</div><div className="q-value"><strong>{owner.name}</strong><br/>{owner.address}<br/>{owner.zip} {owner.city}<br/>{owner.email}<br/>{owner.phone}{owner.siret&&<><br/>SIRET : {owner.siret}</>}</div></div>
             <div><div className="q-label">Locataire</div><div className="q-value"><strong>{tenant.name}</strong><br/>{fullAddress}</div></div>
@@ -372,7 +457,8 @@ function QuittanceModal({ payment, tenant, apartment, building, owner, onClose }
         </div>
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={onClose}>Fermer</button>
-          <button className="btn btn-primary" onClick={print}>Imprimer / PDF</button>
+          <button className="btn btn-ghost" onClick={print}>Imprimer</button>
+          <button className="btn btn-primary" onClick={downloadPdf}>⬇️ Telecharger le PDF</button>
         </div>
       </div>
     </div>
