@@ -32,6 +32,9 @@ function fmt(nFcfa, currency = "FCFA") {
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR") : "-";
 const monthName = (d) => new Date(d).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 const daysUntil = (d) => Math.ceil((new Date(d) - new Date()) / 86400000);
+// ID unique : horodatage (ms) + composante aleatoire, pour eviter toute collision
+// meme en cas de double-clic ou d'ajouts tres rapproches (Date.now() seul ne suffit pas).
+const newId = () => Date.now() * 1000 + Math.floor(Math.random() * 1000);
 
 // ── Synchronisation Supabase (temps reel, partagee entre tous les utilisateurs) ─
 // Chaque action (ajout/modif/suppression) declenche une operation Supabase ciblee et directe,
@@ -95,18 +98,28 @@ function useSupabaseData() {
 
   // Ajoute une ligne : mise a jour locale immediate (reactivite) + insertion Supabase ciblee.
   const addRow = (table, row) => {
-    setData(d => ({ ...d, [table]: [...d[table], row] }));
-    supabase.from(table).insert(row).then(({ error }) => { if (error) console.error(`insert ${table}`, error); });
+    setData(d => d[table].some(r=>r.id===row.id) ? d : ({ ...d, [table]: [...d[table], row] }));
+    supabase.from(table).insert(row).then(({ error }) => {
+      if (error) {
+        console.error(`insert ${table}`, error);
+        alert("Erreur lors de l'enregistrement : " + error.message + "\n\nRecharge la page et reessaie.");
+        setData(d => ({ ...d, [table]: d[table].filter(r=>r.id!==row.id) }));
+      }
+    });
   };
   // Modifie une ligne existante par son id, uniquement celle-la.
   const updateRow = (table, row) => {
     setData(d => ({ ...d, [table]: d[table].map(r => r.id === row.id ? row : r) }));
-    supabase.from(table).update(row).eq("id", row.id).then(({ error }) => { if (error) console.error(`update ${table}`, error); });
+    supabase.from(table).update(row).eq("id", row.id).then(({ error }) => {
+      if (error) { console.error(`update ${table}`, error); alert("Erreur lors de la modification : " + error.message); }
+    });
   };
   // Supprime une ligne par son id, uniquement celle-la.
   const deleteRow = (table, id) => {
     setData(d => ({ ...d, [table]: d[table].filter(r => r.id !== id) }));
-    supabase.from(table).delete().eq("id", id).then(({ error }) => { if (error) console.error(`delete ${table}`, error); });
+    supabase.from(table).delete().eq("id", id).then(({ error }) => {
+      if (error) { console.error(`delete ${table}`, error); alert("Erreur lors de la suppression : " + error.message); }
+    });
   };
   const saveOwner = (owner) => {
     setData(d => ({ ...d, owner }));
@@ -610,7 +623,7 @@ function Buildings({ data, addRow, updateRow, deleteRow, setPage, setSelectedBui
   const save = () => {
     const parsed = {...form,floors:+form.floors};
     if (editing) updateRow("buildings",{...parsed,id:editing});
-    else addRow("buildings",{...parsed,id:Date.now()});
+    else addRow("buildings",{...parsed,id:newId()});
     setShowModal(false);
   };
   const del = (id) => {
@@ -724,7 +737,7 @@ function Apartments({ data, addRow, updateRow, deleteRow, selectedBuilding, setS
   const save = () => {
     const parsed = {...form,buildingId:+form.buildingId,rent:toStorage(form.rent,currency),charges:toStorage(form.charges,currency),surface:+form.surface,rooms:+form.rooms,floor:+form.floor};
     if (editing) updateRow("apartments",{...parsed,id:editing});
-    else addRow("apartments",{...parsed,id:Date.now()});
+    else addRow("apartments",{...parsed,id:newId()});
     setShowModal(false);
   };
   const del = (id) => {if(window.confirm("Supprimer cet appartement ?"))deleteRow("apartments",id);};
@@ -832,7 +845,7 @@ function Tenants({ data, addRow, updateRow, deleteRow }) {
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,deposit:toStorage(form.deposit,currency)};
     if (editing) updateRow("tenants",{...parsed,id:editing});
-    else addRow("tenants",{...parsed,id:Date.now()});
+    else addRow("tenants",{...parsed,id:newId()});
     setShowModal(false);
   };
   const del = (id) => {if(window.confirm("Supprimer ce locataire ?"))deleteRow("tenants",id);};
@@ -939,7 +952,7 @@ function Payments({ data, addRow, updateRow, deleteRow }) {
   const filteredPayments = data.payments.filter(p=>filteredApts.some(a=>a.id===p.apartmentId));
 
   const save = () => {
-    addRow("payments",{...form,id:Date.now(),tenantId:+form.tenantId,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)});
+    addRow("payments",{...form,id:newId(),tenantId:+form.tenantId,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)});
     setShowModal(false);
   };
   const toggle = (p) => updateRow("payments",{...p,status:p.status==="paye"?"en retard":"paye"});
@@ -1116,7 +1129,7 @@ function Maintenance({ data, addRow, updateRow, deleteRow }) {
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,cost:toStorage(form.cost,currency)};
     if(editing) updateRow("maintenances",{...parsed,id:editing});
-    else addRow("maintenances",{...parsed,id:Date.now()});
+    else addRow("maintenances",{...parsed,id:newId()});
     setShowModal(false);
   };
   const next = {"planifie":"en cours","en cours":"termine","termine":"planifie"};
@@ -1255,7 +1268,7 @@ function ChargesPage({ data, addRow, updateRow, deleteRow }) {
   const save = () => {
     const parsed = {...form,buildingId:+form.buildingId,amount:toStorage(form.amount,currency)};
     if (editing) updateRow("charges",{...parsed,id:editing});
-    else addRow("charges",{...parsed,id:Date.now()});
+    else addRow("charges",{...parsed,id:newId()});
     setShowModal(false);
   };
   const del = (id) => {if(window.confirm("Supprimer cette charge ?"))deleteRow("charges",id);};
@@ -1437,7 +1450,7 @@ function SyndicCharges({ data, addRow, updateRow, deleteRow }) {
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)};
     if(editing) updateRow("syndicCharges",{...parsed,id:editing});
-    else addRow("syndicCharges",{...parsed,id:Date.now()});
+    else addRow("syndicCharges",{...parsed,id:newId()});
     setShowModal(false);
   };
   const del = (id) => {if(window.confirm("Supprimer cet appel de fonds ?"))deleteRow("syndicCharges",id);};
