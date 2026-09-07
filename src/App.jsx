@@ -279,24 +279,6 @@ function Badge({ status }) {
   return <span className={`badge ${cls}`}>{label}</span>;
 }
 
-function Ring({ value, max, color, label, size = 80 }) {
-  const r = size/2-8, circ = 2*Math.PI*r, pct = max > 0 ? Math.min(value/max,1) : 0;
-  return (
-    <div className="ring-wrap" style={{width:size,height:size}}>
-      <svg className="ring-svg" width={size} height={size}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#e2e8f0" strokeWidth="7"/>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth="7"
-          strokeDasharray={circ} strokeDashoffset={circ*(1-pct)} strokeLinecap="round"
-          style={{transition:"stroke-dashoffset .6s ease"}}/>
-      </svg>
-      <div className="ring-text">
-        <span className="ring-pct">{Math.round(pct*100)}%</span>
-        <span className="ring-lbl">{label}</span>
-      </div>
-    </div>
-  );
-}
-
 function RevenueChart({ payments }) {
   const { currency } = useContext(CurrencyContext);
   const months = [];
@@ -473,6 +455,7 @@ const METHOD_LABELS = { virement: "Virement", cheque: "Cheque", especes: "Espece
 function Dashboard({ data }) {
   const { currency } = useContext(CurrencyContext);
   const loue = data.apartments.filter(a=>a.status==="loue").length;
+  const vacantApartments = data.apartments.filter(a=>a.status!=="loue");
   const totalRent = data.apartments.filter(a=>a.status==="loue").reduce((s,a)=>s+a.rent+a.charges,0);
   const late = data.payments.filter(p=>p.status==="en retard").length;
   const paidPayments = data.payments.filter(p=>p.status==="paye");
@@ -506,6 +489,18 @@ function Dashboard({ data }) {
           <div className="stat-top"><span className="stat-label">Occupation</span><div className="stat-icon-wrap" style={{background:"#eff6ff"}}>🏠</div></div>
           <div className="stat-value">{loue}<span style={{fontSize:16,color:"var(--t3)",fontWeight:500}}>/{data.apartments.length}</span></div>
           <div className="stat-delta">{data.apartments.length-loue} vacant(s)</div>
+          {vacantApartments.length>0&&(
+            <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid var(--border)",display:"flex",flexDirection:"column",gap:2}}>
+              {vacantApartments.map(a=>{
+                const b=data.buildings.find(b=>b.id===a.buildingId);
+                return (
+                  <div key={a.id} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--t3)"}}>
+                    <span>{a.name}</span><span style={{fontWeight:600,color:"var(--t2)"}}>{b?.name||"-"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="stat-card">
           <div className="stat-top"><span className="stat-label">Revenus mensuels</span><div className="stat-icon-wrap" style={{background:"#f0fdf4"}}>💶</div></div>
@@ -565,33 +560,9 @@ function Dashboard({ data }) {
         </table>
       </div>
 
-      <div className="two-col">
-        <div className="card">
-          <div className="card-header"><span className="card-title">Revenus — 6 derniers mois</span></div>
-          <RevenueChart payments={data.payments}/>
-        </div>
-        <div className="card">
-          <div className="card-header"><span className="card-title">Taux d'occupation global</span></div>
-          <div style={{padding:"16px 20px",display:"flex",gap:20,alignItems:"center"}}>
-            <Ring value={loue} max={data.apartments.length} color="#2563eb" label="Occ."/>
-            <div style={{flex:1}}>
-              {data.apartments.map(a=>{
-                const b = data.buildings.find(b=>b.id===a.buildingId);
-                return (
-                  <div key={a.id} style={{marginBottom:10}}>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}>
-                      <span style={{color:"var(--t2)",fontWeight:500}}>{a.name} <span style={{color:"var(--t3)",fontSize:10}}>({b?.name})</span></span>
-                      <span style={{color:"var(--t1)",fontWeight:600}}>{fmt(a.rent+a.charges,currency)}</span>
-                    </div>
-                    <div className="progress">
-                      <div className="progress-fill" style={{width:`${Math.min((a.rent/2500)*100,100)}%`,background:a.status==="loue"?"var(--accent)":"var(--border)"}}/>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><span className="card-title">Revenus — 6 derniers mois</span></div>
+        <RevenueChart payments={data.payments}/>
       </div>
 
       <div className="two-col">
