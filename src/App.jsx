@@ -1673,12 +1673,36 @@ const TITLES = {
   settings:["Parametres","Configuration du compte"],
 };
 
+// Detecte si une nouvelle version du site a ete deployee pendant que l'onglet est ouvert,
+// pour eviter qu'un onglet ancien (code perime) reste utilise sans que personne s'en rende compte.
+function useVersionCheck() {
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => {
+    let initialVersion = null;
+    const check = () => {
+      fetch("/version.txt", { cache: "no-store" })
+        .then(r => r.text())
+        .then(v => {
+          v = v.trim();
+          if (initialVersion === null) { initialVersion = v; return; }
+          if (v && v !== initialVersion) setUpdateAvailable(true);
+        })
+        .catch(() => {});
+    };
+    check();
+    const interval = setInterval(check, 5 * 60 * 1000); // toutes les 5 minutes
+    return () => clearInterval(interval);
+  }, []);
+  return updateAvailable;
+}
+
 export default function App() {
   const [page, setPage] = useState("dashboard");
   const [selectedBuilding, setSelectedBuilding] = useState(null);
   const { data, addRow, updateRow, deleteRow, saveOwner, loading, resetAll } = useSupabaseData();
   const [currency, setCurrency] = useState(() => localStorage.getItem("immogest_currency") || "FCFA");
   useEffect(() => { localStorage.setItem("immogest_currency", currency); }, [currency]);
+  const updateAvailable = useVersionCheck();
 
   const lateCount = data.payments.filter(p=>p.status==="en retard").length;
   const today = new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
@@ -1701,7 +1725,13 @@ export default function App() {
   return (
     <CurrencyContext.Provider value={{ currency, setCurrency }}>
       <style>{css}</style>
-      <div className="app">
+      {updateAvailable && (
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:9999,background:"#111",color:"#fff",padding:"10px 20px",display:"flex",justifyContent:"center",alignItems:"center",gap:14,fontSize:13}}>
+          <span>🔄 Une nouvelle version d'ImmoGest est disponible. Recharge la page pour avoir les dernieres corrections.</span>
+          <button onClick={()=>window.location.reload()} style={{background:"#fff",color:"#111",border:"none",padding:"6px 14px",borderRadius:6,fontWeight:600,cursor:"pointer",fontSize:12}}>Recharger maintenant</button>
+        </div>
+      )}
+      <div className="app" style={updateAvailable?{marginTop:42}:undefined}>
         <nav className="sidebar">
           <div className="sidebar-brand">
             <div className="brand-row">
