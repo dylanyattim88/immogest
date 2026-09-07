@@ -7,4 +7,4 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   realtime: { params: { eventsPerSecond: 10 } },
 });
 
-export const TABLES = ["buildings", "apartments", "tenants", "payments", "maintenances", "syndicCharges"];
+export const TABLES = ["buildings", "apartments", "tenants", "payments", "maintenances", "syndicCharges", "charges"];

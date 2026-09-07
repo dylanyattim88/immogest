@@ -10,6 +10,7 @@ const emptyData = {
   payments: [],
   maintenances: [],
   syndicCharges: [],
+  charges: [],
   owner: { name: "", address: "", city: "", zip: "", email: "", phone: "", siret: "" },
 };
 
@@ -42,13 +43,14 @@ function useSupabaseData() {
   const [loading, setLoading] = useState(true);
 
   const fetchAll = async () => {
-    const [b, a, t, p, m, s, o] = await Promise.all([
+    const [b, a, t, p, m, s, c, o] = await Promise.all([
       supabase.from("buildings").select("*").order("id"),
       supabase.from("apartments").select("*").order("id"),
       supabase.from("tenants").select("*").order("id"),
       supabase.from("payments").select("*").order("id"),
       supabase.from("maintenances").select("*").order("id"),
       supabase.from("syndicCharges").select("*").order("id"),
+      supabase.from("charges").select("*").order("id"),
       supabase.from("owner").select("*").eq("id", 1).maybeSingle(),
     ]);
     setData({
@@ -58,6 +60,7 @@ function useSupabaseData() {
       payments: p.data || [],
       maintenances: m.data || [],
       syndicCharges: s.data || [],
+      charges: c.data || [],
       owner: o.data || emptyData.owner,
     });
     setLoading(false);
@@ -1229,6 +1232,149 @@ function Maintenance({ data, addRow, updateRow, deleteRow }) {
   );
 }
 
+// ── Charges par immeuble (electricite, eau, assurance, taxes, gardiennage...) ──
+const CHARGE_CATEGORIES = ["Electricite","Eau","Assurance","Taxes foncieres","Gardiennage","Nettoyage","Ascenseur","Internet","Autre"];
+function ChargesPage({ data, addRow, updateRow, deleteRow }) {
+  const { currency } = useContext(CurrencyContext);
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [filterBuilding, setFilterBuilding] = useState(null);
+  const [filterYear, setFilterYear] = useState(null);
+  const empty = {buildingId:"",category:"Electricite",amount:"",date:new Date().toISOString().split("T")[0],notes:""};
+  const [form, setForm] = useState(empty);
+  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const years = [...new Set(data.charges.map(c=>c.date?.slice(0,4)).filter(Boolean))].sort((a,b)=>b-a);
+
+  const filtered = data.charges.filter(c=>
+    (!filterBuilding || c.buildingId===filterBuilding) &&
+    (!filterYear || c.date?.slice(0,4)===filterYear)
+  );
+
+  const save = () => {
+    const parsed = {...form,buildingId:+form.buildingId,amount:toStorage(form.amount,currency)};
+    if (editing) updateRow("charges",{...parsed,id:editing});
+    else addRow("charges",{...parsed,id:Date.now()});
+    setShowModal(false);
+  };
+  const del = (id) => {if(window.confirm("Supprimer cette charge ?"))deleteRow("charges",id);};
+  const openNew = () => {setEditing(null);setForm({...empty,buildingId:filterBuilding||""});setShowModal(true);};
+  const openEdit = (c) => {setEditing(c.id);setForm({...c,amount:toDisplay(c.amount,currency)});setShowModal(true);};
+
+  const total = filtered.reduce((s,c)=>s+c.amount,0);
+
+  // Repartition par immeuble (pertinente quand aucun immeuble specifique n'est selectionne)
+  const byBuilding = data.buildings.map(b=>{
+    const rows = filtered.filter(c=>c.buildingId===b.id);
+    return {...b, total: rows.reduce((s,c)=>s+c.amount,0), count: rows.length};
+  }).filter(b=>b.count>0);
+
+  // Repartition par annee
+  const byYear = {};
+  filtered.forEach(c=>{ const y=c.date?.slice(0,4)||"?"; byYear[y]=(byYear[y]||0)+c.amount; });
+  const byYearRows = Object.entries(byYear).sort((a,b)=>b[0].localeCompare(a[0]));
+
+  return (
+    <div>
+      <div className="filter-bar" style={{justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <span className="filter-label">Immeuble :</span>
+          <button className={`filter-btn ${!filterBuilding?"active":""}`} onClick={()=>setFilterBuilding(null)}>Tous</button>
+          {data.buildings.map(b=><button key={b.id} className={`filter-btn ${filterBuilding===b.id?"active":""}`} onClick={()=>setFilterBuilding(b.id)}>{b.name}</button>)}
+          <span className="filter-label" style={{marginLeft:10}}>Annee :</span>
+          <button className={`filter-btn ${!filterYear?"active":""}`} onClick={()=>setFilterYear(null)}>Toutes</button>
+          {years.map(y=><button key={y} className={`filter-btn ${filterYear===y?"active":""}`} onClick={()=>setFilterYear(y)}>{y}</button>)}
+        </div>
+        <button className="btn btn-primary" onClick={openNew}>+ Nouvelle charge</button>
+      </div>
+
+      {/* Mini tableau de bord — uniquement les charges par immeuble */}
+      <div className="stat-grid" style={{marginBottom:16}}>
+        <div className="stat-card">
+          <div className="stat-top"><span className="stat-label">Total des charges</span><div className="stat-icon-wrap" style={{background:"#fef2f2"}}>💸</div></div>
+          <div className="stat-value" style={{fontSize:20}}>{fmt(total,currency)}</div>
+          <div className="stat-delta">{filtered.length} charge(s){filterBuilding?"":" — tous immeubles"}{filterYear?` — ${filterYear}`:""}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-top"><span className="stat-label">Par immeuble</span><div className="stat-icon-wrap" style={{background:"#eff6ff"}}>🏢</div></div>
+          {byBuilding.length>0?(
+            <div style={{display:"flex",flexDirection:"column",gap:4,marginTop:6}}>
+              {byBuilding.map(b=>(
+                <div key={b.id} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                  <span style={{color:"var(--t3)"}}>{b.name}</span><span style={{fontWeight:600,color:"var(--t1)"}}>{fmt(b.total,currency)}</span>
+                </div>
+              ))}
+            </div>
+          ):<div style={{fontSize:13,color:"var(--t3)",marginTop:6}}>Aucune charge</div>}
+        </div>
+        <div className="stat-card">
+          <div className="stat-top"><span className="stat-label">Par annee</span><div className="stat-icon-wrap" style={{background:"#fffbeb"}}>📅</div></div>
+          {byYearRows.length>0?(
+            <div style={{display:"flex",flexDirection:"column",gap:4,marginTop:6}}>
+              {byYearRows.map(([y,v])=>(
+                <div key={y} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                  <span style={{color:"var(--t3)"}}>{y}</span><span style={{fontWeight:600,color:"var(--t1)"}}>{fmt(v,currency)}</span>
+                </div>
+              ))}
+            </div>
+          ):<div style={{fontSize:13,color:"var(--t3)",marginTop:6}}>Aucune charge</div>}
+        </div>
+      </div>
+
+      <div className="card">
+        <table>
+          <thead><tr><th>Immeuble</th><th>Categorie</th><th>Montant</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
+          <tbody>
+            {[...filtered].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(c=>{
+              const b=data.buildings.find(b=>b.id===c.buildingId);
+              return (
+                <tr key={c.id}>
+                  <td className="td-primary">{b?.name||"-"}</td>
+                  <td><span className="chip">{c.category}</span></td>
+                  <td className="td-mono" style={{fontWeight:700,color:"var(--t1)"}}>{fmt(c.amount,currency)}</td>
+                  <td className="td-mono">{fmtDate(c.date)}</td>
+                  <td style={{fontSize:12,color:"var(--t3)"}}>{c.notes||"-"}</td>
+                  <td><div style={{display:"flex",gap:6}}><button className="btn btn-ghost btn-sm" onClick={()=>openEdit(c)}>Editer</button><button className="btn btn-danger btn-sm" onClick={()=>del(c.id)}>X</button></div></td>
+                </tr>
+              );
+            })}
+            {filtered.length===0&&<tr><td colSpan={6}><div className="empty"><div className="empty-icon">💸</div><div className="empty-text">Aucune charge enregistree</div></div></td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {showModal&&(
+        <div className="overlay" onClick={e=>e.target===e.currentTarget&&setShowModal(false)}>
+          <div className="modal">
+            <div className="modal-title">{editing?"Modifier la charge":"Nouvelle charge"}</div>
+            <div className="modal-sub">Depense liee a un immeuble (electricite, eau, assurance, taxes...)</div>
+            <div className="form-group"><label className="form-label">Immeuble</label>
+              <select className="form-input" value={form.buildingId} onChange={e=>upd("buildingId",e.target.value)}>
+                <option value="">-- Selectionner --</option>
+                {data.buildings.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+            <div className="form-row">
+              <div className="form-group"><label className="form-label">Categorie</label>
+                <select className="form-input" value={form.category} onChange={e=>upd("category",e.target.value)}>
+                  {CHARGE_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="form-group"><label className="form-label">Date</label><input className="form-input" type="date" value={form.date} onChange={e=>upd("date",e.target.value)}/></div>
+            </div>
+            <div className="form-group"><label className="form-label">Montant ({currency})</label><input className="form-input" type="number" value={form.amount} onChange={e=>upd("amount",e.target.value)}/></div>
+            <div className="form-group"><label className="form-label">Notes</label><textarea className="form-input" rows={2} value={form.notes} onChange={e=>upd("notes",e.target.value)}/></div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={()=>setShowModal(false)}>Annuler</button>
+              <button className="btn btn-primary" onClick={save}>Enregistrer</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Charges de copropriete (appels de fonds) ────────────────────────────────────
 function SyndicCharges({ data, addRow, updateRow, deleteRow }) {
   const { currency } = useContext(CurrencyContext);
@@ -1360,6 +1506,9 @@ function ExportPage({ data }) {
     section("MAINTENANCE", ["Appartement","Immeuble","Description","Date","Statut","Priorite",`Cout (${currency})`,"Prestataire","Notes"],
       data.maintenances.map(m=>[apartmentName(m.apartmentId),apartmentBuildingName(m.apartmentId),m.description,m.date,m.status,m.priority,num(m.cost),m.provider,m.notes]));
 
+    section("CHARGES PAR IMMEUBLE", ["Immeuble","Categorie",`Montant (${currency})`,"Date","Notes"],
+      data.charges.map(c=>[buildingName(c.buildingId),c.category,num(c.amount),c.date,c.notes]));
+
     section("CHARGES COPRO", ["Appartement","Immeuble",`Montant (${currency})`,"Periode","Echeance","Statut","Notes"],
       data.syndicCharges.map(c=>[apartmentName(c.apartmentId),apartmentBuildingName(c.apartmentId),num(c.amount),c.period,c.dueDate,c.status,c.notes]));
 
@@ -1378,6 +1527,7 @@ function ExportPage({ data }) {
     ["Locataires", data.tenants.length],
     ["Paiements", data.payments.length],
     ["Interventions maintenance", data.maintenances.length],
+    ["Charges par immeuble", data.charges.length],
     ["Charges copro", data.syndicCharges.length],
   ];
 
@@ -1445,6 +1595,7 @@ const NAV = [
   {id:"apartments",label:"Appartements",icon:"🏠"},
   {id:"tenants",label:"Locataires",icon:"👥"},
   {id:"payments",label:"Paiements",icon:"💶"},
+  {id:"charges",label:"Charges",icon:"💸"},
   {id:"syndic",label:"Charges copro",icon:"🏛️"},
   {id:"maintenance",label:"Maintenance",icon:"🔧"},
   {id:"export",label:"Export Excel",icon:"📊"},
@@ -1456,6 +1607,7 @@ const TITLES = {
   apartments:["Appartements","Portefeuille par immeuble"],
   tenants:["Locataires","Gestion des baux"],
   payments:["Paiements","Loyers et encaissements"],
+  charges:["Charges","Depenses par immeuble (electricite, eau, assurance...)"],
   syndic:["Charges copro","Appels de fonds par appartement"],
   maintenance:["Maintenance","Travaux et interventions"],
   export:["Export Excel","Telecharger toutes les donnees"],
@@ -1534,6 +1686,7 @@ export default function App() {
             {page==="apartments"&&<Apartments data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow} selectedBuilding={selectedBuilding} setSelectedBuilding={setSelectedBuilding}/>}
             {page==="tenants"&&<Tenants data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
             {page==="payments"&&<Payments data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
+            {page==="charges"&&<ChargesPage data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
             {page==="syndic"&&<SyndicCharges data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
             {page==="maintenance"&&<Maintenance data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
             {page==="export"&&<ExportPage data={data}/>}
