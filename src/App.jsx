@@ -1205,6 +1205,36 @@ function Maintenance({ data, addRow, updateRow, deleteRow }) {
 
 // ── Charges par immeuble (electricite, eau, assurance, taxes, gardiennage...) ──
 const CHARGE_CATEGORIES = ["Electricite","Eau","Assurance","Taxes foncieres","Gardiennage","Nettoyage","Ascenseur","Internet","Autre"];
+// ── Camembert SVG (leger, sans librairie externe) ───────────────────────────────
+const CATEGORY_COLORS = {
+  "Electricite":"#f59e0b","Eau":"#3b82f6","Assurance":"#8b5cf6","Taxes foncieres":"#ef4444",
+  "Gardiennage":"#10b981","Nettoyage":"#06b6d4","Ascenseur":"#f97316","Internet":"#6366f1","Autre":"#94a3b8",
+};
+function PieChart({ data, size = 160 }) {
+  const total = data.reduce((s,d)=>s+d.value,0);
+  if (total<=0) return <div style={{width:size,height:size,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"var(--t3)"}}>Aucune donnee</div>;
+  const r = size/2;
+  const nonZero = data.filter(d=>d.value>0);
+  if (nonZero.length===1) {
+    return <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}><circle cx={r} cy={r} r={r} fill={nonZero[0].color}/></svg>;
+  }
+  let cumulative = 0;
+  const slices = nonZero.map(d=>{
+    const startAngle = (cumulative/total)*2*Math.PI;
+    cumulative += d.value;
+    const endAngle = (cumulative/total)*2*Math.PI;
+    const x1 = r + r*Math.sin(startAngle), y1 = r - r*Math.cos(startAngle);
+    const x2 = r + r*Math.sin(endAngle), y2 = r - r*Math.cos(endAngle);
+    const largeArc = endAngle-startAngle > Math.PI ? 1 : 0;
+    return { color:d.color, path: `M ${r} ${r} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z` };
+  });
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {slices.map((s,i)=><path key={i} d={s.path} fill={s.color} stroke="#fff" strokeWidth="1"/>)}
+    </svg>
+  );
+}
+
 function ChargesPage({ data, addRow, updateRow, deleteRow }) {
   const { currency } = useContext(CurrencyContext);
   const [showModal, setShowModal] = useState(false);
@@ -1244,6 +1274,17 @@ function ChargesPage({ data, addRow, updateRow, deleteRow }) {
   const byYear = {};
   filtered.forEach(c=>{ const y=c.date?.slice(0,4)||"?"; byYear[y]=(byYear[y]||0)+c.amount; });
   const byYearRows = Object.entries(byYear).sort((a,b)=>b[0].localeCompare(a[0]));
+
+  // Repartition par categorie (pour le camembert)
+  const byCategory = {};
+  filtered.forEach(c=>{ const k=c.category||"Autre"; byCategory[k]=(byCategory[k]||0)+c.amount; });
+  const categoryRows = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
+  const pieData = categoryRows.map(([label,value])=>({label,value,color:CATEGORY_COLORS[label]||"#94a3b8"}));
+
+  // Repartition par mois
+  const byMonth = {};
+  filtered.forEach(c=>{ const k=c.date?c.date.slice(0,7):"inconnu"; byMonth[k]=(byMonth[k]||0)+c.amount; });
+  const monthRows = Object.entries(byMonth).sort((a,b)=>b[0].localeCompare(a[0]));
 
   return (
     <div>
@@ -1289,6 +1330,40 @@ function ChargesPage({ data, addRow, updateRow, deleteRow }) {
               ))}
             </div>
           ):<div style={{fontSize:13,color:"var(--t3)",marginTop:6}}>Aucune charge</div>}
+        </div>
+      </div>
+
+      <div className="two-col" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-header"><span className="card-title">Repartition par categorie</span></div>
+          <div style={{padding:"18px 20px",display:"flex",gap:24,alignItems:"center",flexWrap:"wrap"}}>
+            <PieChart data={pieData} size={150}/>
+            <div style={{flex:1,minWidth:160,display:"flex",flexDirection:"column",gap:8}}>
+              {categoryRows.length>0?categoryRows.map(([label,value])=>(
+                <div key={label} style={{display:"flex",alignItems:"center",gap:8,fontSize:12}}>
+                  <span style={{width:10,height:10,borderRadius:"50%",background:CATEGORY_COLORS[label]||"#94a3b8",flexShrink:0}}/>
+                  <span style={{flex:1,color:"var(--t2)"}}>{label}</span>
+                  <span style={{fontWeight:700,color:"var(--t1)"}}>{total>0?Math.round((value/total)*100):0}%</span>
+                  <span style={{color:"var(--t3)",minWidth:70,textAlign:"right"}}>{fmt(value,currency)}</span>
+                </div>
+              )):<div style={{fontSize:13,color:"var(--t3)"}}>Aucune charge</div>}
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header"><span className="card-title">Par mois</span></div>
+          <table>
+            <thead><tr><th>Mois</th><th>Montant</th></tr></thead>
+            <tbody>
+              {monthRows.map(([m,v])=>(
+                <tr key={m}>
+                  <td className="td-primary" style={{textTransform:"capitalize"}}>{m==="inconnu"?"Date inconnue":monthName(m+"-01")}</td>
+                  <td className="td-mono" style={{fontWeight:700,color:"var(--t1)"}}>{fmt(v,currency)}</td>
+                </tr>
+              ))}
+              {monthRows.length===0&&<tr><td colSpan={2}><div className="empty"><div className="empty-icon">📅</div><div className="empty-text">Aucune charge enregistree</div></div></td></tr>}
+            </tbody>
+          </table>
         </div>
       </div>
 
