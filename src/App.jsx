@@ -2,6 +2,7 @@ import { useState, useEffect, createContext, useContext } from "react";
 import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import { supabase, TABLES } from "./supabaseClient";
+import { applyChange, visibleRows, newId } from "./syncLogic";
 
 const emptyData = {
   buildings: [],
@@ -32,15 +33,11 @@ function fmt(nFcfa, currency = "FCFA") {
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR") : "-";
 const monthName = (d) => new Date(d).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 const daysUntil = (d) => Math.ceil((new Date(d) - new Date()) / 86400000);
-// ID unique : horodatage (ms) + composante aleatoire, pour eviter toute collision
-// meme en cas de double-clic ou d'ajouts tres rapproches (Date.now() seul ne suffit pas).
-const newId = () => Date.now() * 1000 + Math.floor(Math.random() * 1000);
-
 // ── Synchronisation Supabase (temps reel, partagee entre tous les utilisateurs) ─
-// Chaque action (ajout/modif/suppression) declenche une operation Supabase ciblee et directe,
-// sur la ligne concernee uniquement. Aucune comparaison globale entre "avant/apres" n'est faite :
-// c'est ce qui provoquait le bug de suppressions en masse quand plusieurs onglets/appareils
-// etaient ouverts en meme temps (un instantane perime pouvait etre interprete comme "a supprimer").
+// Chaque action (ajout/modif/suppression) declenche une operation Supabase ciblee sur UNE ligne.
+// La "suppression" est DOUCE : la ligne recoit une date "deletedAt" et reste en base
+// (restaurable depuis Parametres > Corbeille). Aucune suppression definitive n'est possible
+// depuis le site, et la base elle-meme refuse les DELETE (voir supabase/protection.sql).
 function useSupabaseData() {
   const [data, setData] = useState(emptyData);
   const [loading, setLoading] = useState(true);
@@ -57,13 +54,13 @@ function useSupabaseData() {
       supabase.from("owner").select("*").eq("id", 1).maybeSingle(),
     ]);
     setData({
-      buildings: b.data || [],
-      apartments: a.data || [],
-      tenants: t.data || [],
-      payments: p.data || [],
-      maintenances: m.data || [],
-      syndicCharges: s.data || [],
-      charges: c.data || [],
+      buildings: visibleRows(b.data),
+      apartments: visibleRows(a.data),
+      tenants: visibleRows(t.data),
+      payments: visibleRows(p.data),
+      maintenances: visibleRows(m.data),
+      syndicCharges: visibleRows(s.data),
+      charges: visibleRows(c.data),
       owner: o.data || emptyData.owner,
     });
     setLoading(false);
@@ -76,17 +73,7 @@ function useSupabaseData() {
     // sur la ligne concernee : jamais de remplacement en masse d'une table entiere.
     TABLES.forEach(table => {
       channel.on("postgres_changes", { event: "*", schema: "public", table }, (payload) => {
-        setData(d => {
-          let arr = d[table];
-          if (payload.eventType === "INSERT") {
-            arr = arr.some(r => r.id === payload.new.id) ? arr.map(r => r.id === payload.new.id ? payload.new : r) : [...arr, payload.new];
-          } else if (payload.eventType === "UPDATE") {
-            arr = arr.map(r => r.id === payload.new.id ? payload.new : r);
-          } else if (payload.eventType === "DELETE") {
-            arr = arr.filter(r => r.id !== payload.old.id);
-          }
-          return { ...d, [table]: arr };
-        });
+        setData(d => ({ ...d, [table]: applyChange(d[table], payload) }));
       });
     });
     channel.on("postgres_changes", { event: "*", schema: "public", table: "owner" }, (payload) => {
@@ -110,15 +97,22 @@ function useSupabaseData() {
   // Modifie une ligne existante par son id, uniquement celle-la.
   const updateRow = (table, row) => {
     setData(d => ({ ...d, [table]: d[table].map(r => r.id === row.id ? row : r) }));
-    supabase.from(table).update(row).eq("id", row.id).then(({ error }) => {
+    // "deletedAt" n'est jamais modifie par une edition (seulement par Supprimer / Restaurer).
+    // eslint-disable-next-line no-unused-vars
+    const { deletedAt, ...fields } = row;
+    supabase.from(table).update(fields).eq("id", row.id).then(({ error }) => {
       if (error) { console.error(`update ${table}`, error); alert("Erreur lors de la modification : " + error.message); }
     });
   };
-  // Supprime une ligne par son id, uniquement celle-la.
+  // "Supprime" une ligne : suppression DOUCE (la ligne reste en base, restaurable via la Corbeille).
   const deleteRow = (table, id) => {
     setData(d => ({ ...d, [table]: d[table].filter(r => r.id !== id) }));
-    supabase.from(table).delete().eq("id", id).then(({ error }) => {
-      if (error) { console.error(`delete ${table}`, error); alert("Erreur lors de la suppression : " + error.message); }
+    supabase.from(table).update({ deletedAt: new Date().toISOString() }).eq("id", id).then(({ error }) => {
+      if (error) {
+        console.error(`delete ${table}`, error);
+        alert("Erreur lors de la suppression : " + error.message + "\n\nLa ligne n'a pas ete supprimee. Verifie que le script SQL de protection a bien ete execute dans Supabase.");
+        fetchAll();
+      }
     });
   };
   const saveOwner = (owner) => {
@@ -126,12 +120,22 @@ function useSupabaseData() {
     supabase.from("owner").upsert({ ...owner, id: 1 }).then(({ error }) => { if (error) console.error("update owner", error); });
   };
 
-  const resetAll = async () => {
-    for (const table of TABLES) await supabase.from(table).delete().gte("id", 0);
+  // Corbeille : lignes supprimees (suppression douce) de toutes les tables, et restauration.
+  const loadTrash = async () => {
+    const results = await Promise.all(TABLES.map(async table => {
+      const { data: rows, error } = await supabase.from(table).select("*").not("deletedAt", "is", null);
+      return { table, rows: error ? [] : (rows || []), error: error?.message };
+    }));
+    return results;
+  };
+  const restoreRow = async (table, id) => {
+    const { error } = await supabase.from(table).update({ deletedAt: null }).eq("id", id);
+    if (error) { alert("Erreur lors de la restauration : " + error.message); return false; }
     await fetchAll();
+    return true;
   };
 
-  return { data, addRow, updateRow, deleteRow, saveOwner, loading, resetAll };
+  return { data, addRow, updateRow, deleteRow, saveOwner, loadTrash, restoreRow, loading };
 }
 
 const css = `
@@ -840,7 +844,8 @@ function Tenants({ data, addRow, updateRow, deleteRow }) {
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
 
   const filteredApts = filterBuilding ? data.apartments.filter(a=>a.buildingId===filterBuilding) : data.apartments;
-  const filteredTenants = data.tenants.filter(t=>filteredApts.some(a=>a.id===t.apartmentId));
+  // Sans filtre d'immeuble : TOUS les locataires, meme ceux sans appartement valide (jamais masques).
+  const filteredTenants = data.tenants.filter(t=>!filterBuilding || filteredApts.some(a=>a.id===t.apartmentId));
 
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,deposit:toStorage(form.deposit,currency)};
@@ -949,7 +954,7 @@ function Payments({ data, addRow, updateRow, deleteRow }) {
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
 
   const filteredApts = filterBuilding ? data.apartments.filter(a=>a.buildingId===filterBuilding) : data.apartments;
-  const filteredPayments = data.payments.filter(p=>filteredApts.some(a=>a.id===p.apartmentId));
+  const filteredPayments = data.payments.filter(p=>!filterBuilding || filteredApts.some(a=>a.id===p.apartmentId));
 
   const save = () => {
     addRow("payments",{...form,id:newId(),tenantId:+form.tenantId,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)});
@@ -1118,7 +1123,7 @@ function Maintenance({ data, addRow, updateRow, deleteRow }) {
 
   const filteredApts = filterBuilding ? data.apartments.filter(a=>a.buildingId===filterBuilding) : data.apartments;
   const filteredMaints = data.maintenances
-    .filter(m=>filteredApts.some(a=>a.id===m.apartmentId))
+    .filter(m=>!filterBuilding || filteredApts.some(a=>a.id===m.apartmentId))
     .sort((a,b)=>{
       const aDone = a.status==="termine" ? 1 : 0;
       const bDone = b.status==="termine" ? 1 : 0;
@@ -1445,7 +1450,7 @@ function SyndicCharges({ data, addRow, updateRow, deleteRow }) {
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
 
   const filteredApts = filterBuilding ? data.apartments.filter(a=>a.buildingId===filterBuilding) : data.apartments;
-  const filteredCharges = data.syndicCharges.filter(c=>filteredApts.some(a=>a.id===c.apartmentId));
+  const filteredCharges = data.syndicCharges.filter(c=>!filterBuilding || filteredApts.some(a=>a.id===c.apartmentId));
 
   const save = () => {
     const parsed = {...form,apartmentId:+form.apartmentId,amount:toStorage(form.amount,currency)};
@@ -1615,7 +1620,58 @@ function ExportPage({ data }) {
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────────
-function Settings({ data, saveOwner, resetAll }) {
+// Libelle lisible pour chaque type de ligne dans la Corbeille
+const TRASH_LABELS = {
+  tenants: ["Locataire", r=>r.name],
+  apartments: ["Appartement", r=>r.name],
+  buildings: ["Immeuble", r=>r.name],
+  payments: ["Paiement", r=>`${r.type||"Paiement"} — ${fmtDate(r.date)}`],
+  maintenances: ["Maintenance", r=>r.description],
+  charges: ["Charge", r=>`${r.category||"Charge"} — ${fmtDate(r.date)}`],
+  syndicCharges: ["Charge copro", r=>`${r.period||"Appel de fonds"} — ${fmtDate(r.dueDate)}`],
+};
+function Trash({ loadTrash, restoreRow }) {
+  const [items, setItems] = useState(null);
+  const [loadingTrash, setLoadingTrash] = useState(false);
+  const refresh = async () => {
+    setLoadingTrash(true);
+    const results = await loadTrash();
+    const flat = results.flatMap(({table,rows})=>rows.map(r=>({table,row:r})))
+      .sort((a,b)=>new Date(b.row.deletedAt)-new Date(a.row.deletedAt));
+    setItems({ list: flat, error: results.find(r=>r.error)?.error || null });
+    setLoadingTrash(false);
+  };
+  const restore = async (table,id) => { if (await restoreRow(table,id)) refresh(); };
+  return (
+    <div className="card" style={{padding:24,marginTop:16}}>
+      <div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:8}}>Corbeille</div>
+      <div style={{fontSize:13,color:"var(--t3)",marginBottom:14}}>Les elements supprimes ne sont jamais effaces : ils restent ici et peuvent etre restaures.</div>
+      <button className="btn btn-ghost" onClick={refresh} disabled={loadingTrash}>{loadingTrash?"Chargement...":"Afficher les elements supprimes"}</button>
+      {items&&items.error&&<div style={{fontSize:12,color:"var(--red)",marginTop:10}}>Corbeille indisponible : {items.error}. Le script SQL de protection n'a probablement pas encore ete execute dans Supabase.</div>}
+      {items&&!items.error&&items.list.length===0&&<div style={{fontSize:13,color:"var(--t3)",marginTop:12}}>La corbeille est vide.</div>}
+      {items&&items.list.length>0&&(
+        <table style={{marginTop:12}}>
+          <thead><tr><th>Type</th><th>Element</th><th>Supprime le</th><th></th></tr></thead>
+          <tbody>
+            {items.list.map(({table,row})=>{
+              const [label,name]=TRASH_LABELS[table]||[table,r=>r.id];
+              return (
+                <tr key={table+row.id}>
+                  <td><span className="chip">{label}</span></td>
+                  <td className="td-primary">{name(row)||"-"}</td>
+                  <td className="td-mono">{fmtDate(row.deletedAt)}</td>
+                  <td><button className="btn btn-success btn-sm" onClick={()=>restore(table,row.id)}>Restaurer</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function Settings({ data, saveOwner, loadTrash, restoreRow }) {
   const [form, setForm] = useState({...data.owner});
   const [saved, setSaved] = useState(false);
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
@@ -1638,11 +1694,7 @@ function Settings({ data, saveOwner, resetAll }) {
         <div className="form-group"><label className="form-label">SIRET (optionnel)</label><input className="form-input" value={form.siret} onChange={e=>upd("siret",e.target.value)}/></div>
         <button className="btn btn-primary" onClick={save} style={{marginTop:8}}>{saved?"Sauvegarde !":"Sauvegarder"}</button>
       </div>
-      <div className="card" style={{padding:24,marginTop:16,borderColor:"#fecaca"}}>
-        <div style={{fontSize:14,fontWeight:700,color:"var(--red)",marginBottom:8}}>Zone dangereuse</div>
-        <div style={{fontSize:13,color:"var(--t3)",marginBottom:14}}>Reinitialise toutes les donnees pour tout le monde (base partagee). Action irreversible.</div>
-        <button className="btn btn-danger" onClick={()=>{if(window.confirm("Reinitialiser les donnees pour tous les utilisateurs ?"))resetAll();}}>Reinitialiser toutes les donnees</button>
-      </div>
+      <Trash loadTrash={loadTrash} restoreRow={restoreRow}/>
     </div>
   );
 }
@@ -1699,7 +1751,7 @@ function useVersionCheck() {
 export default function App() {
   const [page, setPage] = useState("dashboard");
   const [selectedBuilding, setSelectedBuilding] = useState(null);
-  const { data, addRow, updateRow, deleteRow, saveOwner, loading, resetAll } = useSupabaseData();
+  const { data, addRow, updateRow, deleteRow, saveOwner, loadTrash, restoreRow, loading } = useSupabaseData();
   const [currency, setCurrency] = useState(() => localStorage.getItem("immogest_currency") || "FCFA");
   useEffect(() => { localStorage.setItem("immogest_currency", currency); }, [currency]);
   const updateAvailable = useVersionCheck();
@@ -1779,7 +1831,7 @@ export default function App() {
             {page==="syndic"&&<SyndicCharges data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
             {page==="maintenance"&&<Maintenance data={data} addRow={addRow} updateRow={updateRow} deleteRow={deleteRow}/>}
             {page==="export"&&<ExportPage data={data}/>}
-            {page==="settings"&&<Settings data={data} saveOwner={saveOwner} resetAll={resetAll}/>}
+            {page==="settings"&&<Settings data={data} saveOwner={saveOwner} loadTrash={loadTrash} restoreRow={restoreRow}/>}
           </div>
         </div>
       </div>
